@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net5.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionSuffix>alpha</VersionSuffix>
+    <Authors>scalablecory</Authors>
+    <Description>Networking primitives for use with .NET, such as a low-level HTTP client and connection abstractions.</Description>
+    <Copyright>© 2020, Cory Nelson</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>http;httpclient;socket;sockets</PackageTags>
+    <RepositoryUrl>https://github.com/scalablecory/NetworkToolkit.git</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>

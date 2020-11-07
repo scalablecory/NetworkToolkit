@@ -1,0 +1,1 @@
+NetworkToolkit uses code Copyright (c) .NET Foundation, that is under the same license as NetworkToolkit.
