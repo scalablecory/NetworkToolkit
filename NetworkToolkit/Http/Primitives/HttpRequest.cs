@@ -65,10 +65,8 @@ namespace NetworkToolkit.Http.Primitives
         /// This must be called after the request has been processed.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Reset()
-        {
+        protected void Reset() =>
             Interlocked.Increment(ref _version);
-        }
 
         /// <summary>
         /// Gets a <see cref="ValueHttpRequest"/> for the current request.
@@ -78,10 +76,8 @@ namespace NetworkToolkit.Http.Primitives
         /// The <see cref="ValueHttpRequest"/> will be invalidated once <see cref="Reset"/> is called.
         /// </returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ValueHttpRequest GetValueRequest()
-        {
-            return new ValueHttpRequest(this, _version);
-        }
+        protected internal ValueHttpRequest GetValueRequest() =>
+            new ValueHttpRequest(this, _version);
 
         /// <summary>
         /// Disposes of the request.

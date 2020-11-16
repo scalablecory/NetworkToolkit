@@ -25,6 +25,30 @@ await request.CompleteRequestAsync();
 
 await request.ReadToLastResponseAsync();
 Console.WriteLine($"Got response {request.StatusCode}.");
+
+if(await request.ReadToHeadersAsync())
+{
+    await request.ReadHeadersAsync(...);
+}
+
+if(await request.ReadToContentAsync())
+{
+    int len;
+    byte[] buffer = ArrayPool<byte>.Shared.Rent(4096);
+
+    do
+    {
+        while((len = await request.ReadContentAsync(buffer)) != 0)
+        {
+            ForwardData(buffer[..len]);
+        }
+    }
+    while(await request.ReadToNextContentAsync());
+
+    ArrayPool<byte>.Shared.Return(buffer);
+}
+
+await request.DrainAsync();
 ```
 
 ### Using the opt-in connection pool
