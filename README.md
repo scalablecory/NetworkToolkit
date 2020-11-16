@@ -39,7 +39,7 @@ await using ValueHttpRequest request = (await httpConnection.CreateNewRequestAsy
 
 ### Optimize frequently-used headers
 
-Preparing headers allows pre-validation and cached protocol encoding. In the future, this will light up dynamic table compression in HTTP/2 and HTTP/3.
+Prepare frequently-used headers to reduce CPU costs by pre-validating and caching protocol encoding. In the future, this will light up dynamic table compression in HTTP/2 and HTTP/3.
 
 ```c#
 PreparedHeaderSet preparedHeaders =
@@ -57,7 +57,7 @@ request.WriteHeader(preparedHeaders);
 
 ### Avoiding strings
 
-Avoid `string` and `Uri` allocations and get tight control over encoding by passing in `ReadOnlySpan<byte>`:
+Avoid `string` and `Uri` allocations, optimize away some related processing, and get tight control over encoding by passing in `ReadOnlySpan<byte>`:
 
 ```c#
 ReadOnlySpan<byte> method = HttpRequest.GetMethod; // "GET"
