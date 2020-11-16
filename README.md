@@ -57,15 +57,20 @@ request.WriteHeader(preparedHeaders);
 
 ### Avoiding strings
 
-Avoid string allocations and get tighter control over encoding by passing in `byte[]` arrays:
+Avoid `string` and `Uri` allocations and get tight control over encoding by passing in `ReadOnlySpan<byte>`:
 
 ```c#
-byte[] headerName = ...;
-byte[] headerValue = ...;
+ReadOnlySpan<byte> method = HttpRequest.GetMethod; // "GET"
+ReadOnlySpan<byte> scheme = ...; // "https"
+ReadOnlySpan<byte> authority = ...; // "microsoft.com:80"
+ReadOnlySpan<byte> pathAndQuery = ...; // "/"
+
+ReadOnlySpan<byte> headerName = ...; // "Accept"
+ReadOnlySpan<byte> headerValue = ...; // "text/html"
 
 await using ValueHttpRequest request = ...;
 request.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
-request.WriteRequest(HttpMethod.Get, new Uri("http://microsoft.com"));
+request.WriteRequest(method, scheme, authority, pathAndQuery);
 request.WriteHeader(headerName, headerValue);
 ```
 
