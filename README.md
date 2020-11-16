@@ -91,7 +91,7 @@ while(await request.ReadAsync() != HttpReadType.EndOfStream)
 
         while((len = await request.ReadContentAsync(buffer)) != 0)
         {
-            ForwardData(buffer);
+            ForwardData(buffer[..len]);
         }
 
         ArrayPool<byte>.Shared.Return(buffer);
