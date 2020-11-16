@@ -8,7 +8,7 @@ This is a bit of a prototyping playground right now and APIs may not be stable.
 
 NetworkToolkit provides a lower-level HTTP client that prioritizes performance and flexibility. Once warmed up, it processes requests using zero allocations.
 
-### A simple GET request using exactly one HTTP/1 connection, no pooling.
+### A simple GET request using exactly one HTTP/1 connection, no pooling
 
 Avoid a connection pool to have exact control over connections.
 
@@ -27,7 +27,7 @@ await request.ReadToLastResponseAsync();
 Console.WriteLine($"Got response {request.StatusCode}.");
 ```
 
-### Using the opt-in connection pool.
+### Using the opt-in connection pool
 
 A single-host connection pool handles concurrent HTTP/1 requests, H2C upgrade, ALPN negotiation for HTTP/2, etc.
 
@@ -35,11 +35,9 @@ A single-host connection pool handles concurrent HTTP/1 requests, H2C upgrade, A
 await using ConnectionFactory connectionFactory = new SocketConnectionFactory();
 await using HttpConnection httpConnection = new PooledHttpConnection(connectionFactory, "microsoft.com", 80, sslTargetHost: null);
 await using ValueHttpRequest request = (await httpConnection.CreateNewRequestAsync(HttpPrimitiveVersion.Version11, HttpVersionPolicy.RequestVersionExact)).Value;
-
-// ...
 ```
 
-### Optimize frequently-used headers.
+### Optimize frequently-used headers
 
 Preparing headers allows pre-validation and cached protocol encoding. In the future, this will light up dynamic table compression in HTTP/2 and HTTP/3.
 
