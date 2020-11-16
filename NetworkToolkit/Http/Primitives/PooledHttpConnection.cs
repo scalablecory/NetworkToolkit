@@ -452,6 +452,12 @@ namespace NetworkToolkit.Http.Primitives
                 _request.WriteHeader(name, value);
             }
 
+            protected internal override void WriteHeader(int version, PreparedHeaderSet headers)
+            {
+                ThrowIfDisposed(version);
+                _request.WriteHeader(headers);
+            }
+
             protected internal override void WriteHeader(int version, string name, string value)
             {
                 ThrowIfDisposed(version);
@@ -486,6 +492,12 @@ namespace NetworkToolkit.Http.Primitives
             {
                 ThrowIfDisposed(version);
                 _request.WriteRequest(method, scheme, authority, pathAndQuery);
+            }
+
+            protected internal override void WriteRequest(int version, HttpMethod method, Uri uri)
+            {
+                ThrowIfDisposed(version);
+                _request.WriteRequest(method, uri);
             }
         }
     }

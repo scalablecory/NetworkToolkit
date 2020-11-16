@@ -7,7 +7,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetworkToolkit", "NetworkTo
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{8E172989-D93E-4746-A1A0-39978742AE5F}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "HttpPrimitives", "HttpPrimitives\HttpPrimitives.csproj", "{72B32DEA-6CEA-476F-9A38-B3C89A028127}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetworkToolkit.Examples", "NetworkToolkit.Examples\NetworkToolkit.Examples.csproj", "{72B32DEA-6CEA-476F-9A38-B3C89A028127}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{1E40D58A-9500-4F40-AED4-39078E5B6C55}"
 EndProject

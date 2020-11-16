@@ -276,6 +276,30 @@ namespace NetworkToolkit.Http.Primitives
             _writeBuffer.Commit(len);
         }
 
+        internal void WriteHeader(PreparedHeaderSet headers)
+        {
+            if (headers == null) throw new ArgumentNullException(nameof(headers));
+
+            switch (_writeState)
+            {
+                case WriteState.Unstarted:
+                    throw new InvalidOperationException($"Must call {nameof(ValueHttpRequest)}.{nameof(HttpRequest.WriteRequest)} prior to writing headers.");
+                case WriteState.RequestWritten:
+                    _writeState = WriteState.HeadersWritten;
+                    break;
+                case WriteState.HeadersWritten:
+                    break;
+                default:
+                    throw new InvalidOperationException("Can not write headers after headers have been flushed.");
+            }
+
+            byte[] headersBuffer = headers.Http1Value;
+
+            _writeBuffer.EnsureAvailableSpace(headersBuffer.Length);
+            headersBuffer.AsSpan().CopyTo(_writeBuffer.AvailableSpan);
+            _writeBuffer.Commit(headersBuffer.Length);
+        }
+
         internal void WriteTrailingHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
         {
             if (!_requestIsChunked)
@@ -321,7 +345,7 @@ namespace NetworkToolkit.Http.Primitives
             return name.Length + value.Length + 4; // {name}: {value}\r\n
         }
 
-        internal static unsafe void EncodeHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value, Span<byte> buffer)
+        internal static unsafe int EncodeHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value, Span<byte> buffer)
         {
             Debug.Assert(name.Length > 0);
             Debug.Assert(buffer.Length >= GetEncodeHeaderLength(name, value));
@@ -345,6 +369,8 @@ namespace NetworkToolkit.Http.Primitives
 
             int length = (int)(void*)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(buffer), ref pBuf);
             Debug.Assert(length == GetEncodeHeaderLength(name, value));
+
+            return length;
         }
 
         private void WriteCRLF()

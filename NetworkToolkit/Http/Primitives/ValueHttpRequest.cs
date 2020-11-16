@@ -88,6 +88,13 @@ namespace NetworkToolkit.Http.Primitives
             _request.WriteHeader(_requestVersion, name, value);
 
         /// <summary>
+        /// Writes a set of headers.
+        /// </summary>
+        /// <param name="headers">A set of headers to write to the request.</param>
+        public void WriteHeader(PreparedHeaderSet headers) =>
+            _request.WriteHeader(_requestVersion, headers);
+
+        /// <summary>
         /// Writes a header.
         /// </summary>
         /// <param name="name">The name of the header to write.</param>

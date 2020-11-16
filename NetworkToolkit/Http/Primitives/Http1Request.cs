@@ -77,6 +77,12 @@ namespace NetworkToolkit.Http.Primitives
             _connection.WriteHeader(name, value);
         }
 
+        protected internal override void WriteHeader(int version, PreparedHeaderSet headers)
+        {
+            ThrowIfDisposed(version);
+            _connection.WriteHeader(headers);
+        }
+
         protected internal override void WriteTrailingHeader(int version, ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
         {
             ThrowIfDisposed(version);

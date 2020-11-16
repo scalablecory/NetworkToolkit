@@ -128,6 +128,13 @@ namespace NetworkToolkit.Http.Primitives
         protected internal abstract void WriteHeader(int version, ReadOnlySpan<byte> name, ReadOnlySpan<byte> value);
 
         /// <summary>
+        /// Writes a set of headers.
+        /// </summary>
+        /// <param name="version">The version of the request to operate on. This must be validated by implementations.</param>
+        /// <param name="headers">A set of headers to write to the request.</param>
+        protected internal abstract void WriteHeader(int version, PreparedHeaderSet headers);
+
+        /// <summary>
         /// Writes a trailing header.
         /// To use, trailing headers must be enabled during <see cref="ConfigureRequest(int, long?, bool)"/>.
         /// </summary>
