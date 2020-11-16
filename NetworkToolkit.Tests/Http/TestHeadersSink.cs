@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text;
 using Xunit;
 
-namespace NetworkToolkit.Tests
+namespace NetworkToolkit.Tests.Http
 {
     public sealed class TestHeadersSink : Dictionary<string, List<string>>, IHttpHeadersSink
     {

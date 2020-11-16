@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 
-namespace NetworkToolkit.Tests.Servers
+namespace NetworkToolkit.Tests.Http.Servers
 {
     internal abstract class HttpTestConnection : IAsyncDisposable
     {

@@ -1,5 +1,5 @@
 ﻿using NetworkToolkit.Http.Primitives;
-using NetworkToolkit.Tests.Servers;
+using NetworkToolkit.Tests.Http.Servers;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -8,7 +8,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace NetworkToolkit.Tests
+namespace NetworkToolkit.Tests.Http
 {
     public abstract class HttpGenericTests : TestsBase
     {
@@ -202,6 +202,52 @@ namespace NetworkToolkit.Tests
                 { "foo", "3456" },
                 { "bar", "7890" },
                 { "quz", "1234" }
+            },
+            new TestHeadersSink
+            {
+                { "accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9" },
+                { "accept-encoding", "gzip, deflate, br" },
+                { "accept-language", "en-US,en;q=0.9" },
+                { "cookie", "cookie: aaaa=000000000000000000000000000000000000; bbb=111111111111111111111111111; ccccc=22222222222222222222222222; dddddd=333333333333333333333333333333333333333333333333333333333333333333333; eeee=444444444444444444444444444444444444444444444444444444444444444444444444444" },
+                { "sec-fetch-dest", "document" },
+                { "sec-fetch-mode", "navigate" },
+                { "sec-fetch-site", "none" },
+                { "sec-fetch-user", "?1" },
+                { "upgrade-insecure-requests", "1" },
+                { "user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36 Edg/86.0.622.69" }
+            },
+            new TestHeadersSink
+            {
+                { "Accept-Ranges", "bytes" },
+                { "Cache-Control", "private" },
+                { "Content-Security-Policy", "upgrade-insecure-requests; frame-ancestors 'self' https://stackexchange.com" },
+                { "Content-Type", "text/html; charset=utf-8" },
+                { "Date", "Mon, 16 Nov 2020 23:35:36 GMT" },
+                { "Feature-Policy", "microphone 'none'; speaker 'none'" },
+                { "Server", "Microsoft-IIS/10.0" },
+                { "Strict-Transport-Security", "max-age=15552000" },
+                { "Vary", "Accept-Encoding,Fastly-SSL" },
+                { "Via", "1.1 varnish" },
+                { "x-account-id", "12345" },
+                { "x-aspnet-duration-ms", "44" },
+                { "x-cache", "MISS" },
+                { "x-cache-hits", "0" },
+                { "x-dns-prefetch-control", "off" },
+                { "x-flags", "QA" },
+                { "x-frame-options", "SAMEORIGIN" },
+                { "x-http-count", "2" },
+                { "x-http-duration-ms", "8" },
+                { "x-is-crawler", "0" },
+                { "x-page-view", "1" },
+                { "x-providence-cookie", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+                { "x-redis-count", "22" },
+                { "x-redis-duration-ms", "2" },
+                { "x-request-guid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+                { "x-route-name", "Home/Index" },
+                { "x-served-by", "cache-sea4460-SEA" },
+                { "x-sql-count", "12" },
+                { "x-sql-duration-ms", "12" },
+                { "x-timer", "S1605569737.604081,VS0,VE106" }
             }
         };
 

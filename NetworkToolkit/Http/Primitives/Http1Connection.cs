@@ -13,7 +13,6 @@ using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -383,6 +382,7 @@ namespace NetworkToolkit.Http.Primitives
             _writeBuffer.Commit(2);
         }
 
+        /// <param name="completingRequest">If true, the entire request side is completed. If false, only flushing headers.</param>
         private void FlushHeadersHelper(bool completingRequest)
         {
             switch (_writeState)
@@ -394,6 +394,7 @@ namespace NetworkToolkit.Http.Primitives
                     if (!completingRequest)
                     {
                         _writeState = WriteState.HeadersFlushed;
+                        // end of headers to be written below.
                     }
                     else
                     {
@@ -409,9 +410,6 @@ namespace NetworkToolkit.Http.Primitives
                             // end of trailing headers to be written below.
                         }
                     }
-                    break;
-                case WriteState.TrailingHeadersWritten:
-                    _writeState = WriteState.Finished;
                     break;
                 case WriteState.HeadersFlushed:
                 case WriteState.ContentWritten:
@@ -431,6 +429,10 @@ namespace NetworkToolkit.Http.Primitives
                     // header written, otherwise it needs to be written here.
                     WriteChunkEnvelopeStart(0);
                     _writeState = WriteState.Finished;
+                    break;
+                case WriteState.TrailingHeadersWritten:
+                    _writeState = WriteState.Finished;
+                    // end of trailing headers to be written below.
                     break;
                 default: //case WriteState.Finished:
                     Debug.Assert(_writeState == WriteState.Finished);
@@ -455,14 +457,23 @@ namespace NetworkToolkit.Http.Primitives
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        internal async ValueTask CompleteRequestAsync(CancellationToken cancellationToken)
+        internal ValueTask CompleteRequestAsync(CancellationToken cancellationToken)
         {
             FlushHeadersHelper(completingRequest: true);
             if (_writeBuffer.ActiveLength != 0)
             {
-                await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
-                _writeBuffer.Discard(_writeBuffer.ActiveLength);
+                return CompleteRequestAsyncSlow(cancellationToken);
             }
+            else
+            {
+                return new ValueTask(_stream.FlushAsync(cancellationToken));
+            }
+        }
+
+        private async ValueTask CompleteRequestAsyncSlow(CancellationToken cancellationToken)
+        {
+            await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
+            _writeBuffer.Discard(_writeBuffer.ActiveLength);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -488,7 +499,8 @@ namespace NetworkToolkit.Http.Primitives
                     _writeState = WriteState.ContentWritten;
                     if (!_requestIsChunked)
                     {
-                        return buffers != null ? _stream.WriteAsync(buffers, cancellationToken) : _stream.WriteAsync(buffer, cancellationToken);
+                        if (buffers == null) return _stream.WriteAsync(buffer, cancellationToken);
+                        else return _stream.WriteAsync(buffers, cancellationToken);
                     }
                     else return WriteChunkedContentAsync(buffer, buffers, cancellationToken);
                 default:
@@ -711,9 +723,9 @@ namespace NetworkToolkit.Http.Primitives
                 return;
             }
 
-            while (!ReadHeadersImpl(requestStream, headersSink, state))
+            while (!ReadHeadersImpl(headersSink, state))
             {
-                _readBuffer.Grow();
+                _readBuffer.EnsureAvailableSpace(1);
                 
                 int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
 
@@ -732,16 +744,15 @@ namespace NetworkToolkit.Http.Primitives
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool ReadHeadersImpl(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        private bool ReadHeadersImpl(IHttpHeadersSink headersSink, object? state)
         {
-            if (Avx2.IsSupported) return ReadHeadersAvx2(requestStream, headersSink, state);
-            return ReadHeadersPortable(requestStream, headersSink, state);
+            //if (Avx2.IsSupported) return ReadHeadersAvx2(headersSink, state);
+            return ReadHeadersPortable(headersSink, state);
         }
 
-        private unsafe bool ReadHeadersPortable(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        private unsafe bool ReadHeadersPortable(IHttpHeadersSink headersSink, object? state)
         {
-            Span<byte> originalBuffer = _readBuffer.ActiveSpan;
-            Span<byte> buffer = originalBuffer;
+            Span<byte> buffer = _readBuffer.ActiveSpan;
 
             while (true)
             {
@@ -756,7 +767,7 @@ namespace NetworkToolkit.Http.Primitives
                     {
                         throw new Exception("Unexpected newline while searching for header.");
                     }
-                    _readBuffer.Discard(Tools.UnsafeByteOffset(originalBuffer, buffer) + idx + 1);
+                    _readBuffer.Discard(_readBuffer.ActiveLength - buffer.Length + idx + 1);
                     return true;
                 }
 
@@ -806,15 +817,15 @@ namespace NetworkToolkit.Http.Primitives
             }
 
         needMore:
-            _readBuffer.Discard(Tools.UnsafeByteOffset(originalBuffer, buffer));
+            _readBuffer.Discard(_readBuffer.ActiveLength - buffer.Length);
             return false;
         }
 
-        private unsafe bool ReadHeadersAvx2(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        private unsafe bool ReadHeadersAvx2(IHttpHeadersSink headersSink, object? state)
         {
             if (_readBuffer.ActiveLength < Vector256<byte>.Count)
             {
-                return ReadHeadersPortable(requestStream, headersSink, state);
+                return ReadHeadersPortable(headersSink, state);
             }
 
             Span<byte> buffer = _readBuffer.ActiveSpan;
@@ -829,22 +840,25 @@ namespace NetworkToolkit.Http.Primitives
             while (true)
             {
                 int colIdx;
-                while ((colIdx = BitOperations.TrailingZeroCount(foundCol)) == Vector256<byte>.Count)
+                do
                 {
-                    vectorIter += Vector256<byte>.Count;
-                    if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                    while ((colIdx = BitOperations.TrailingZeroCount(foundCol)) == Vector256<byte>.Count)
                     {
-                        goto nonVector;
+                        vectorIter += Vector256<byte>.Count;
+                        if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                        {
+                            goto nonVector;
+                        }
+
+                        vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
+                        foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
+                        foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
                     }
 
-                    vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
-                    foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
-                    foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
+                    foundCol ^= 1u << colIdx;
+                    colIdx = vectorIter + colIdx;
                 }
-
-                foundCol ^= 1u << colIdx;
-                colIdx = vectorIter + colIdx;
-                Debug.Assert (colIdx >= nameStartIdx);
+                while (colIdx < nameStartIdx);
 
                 if (buffer[colIdx] == '\n')
                 {
@@ -873,24 +887,27 @@ namespace NetworkToolkit.Http.Primitives
                 int lfIdx;
                 do
                 {
-                    while ((lfIdx = BitOperations.TrailingZeroCount(foundLF)) == Vector256<byte>.Count)
+                    do
                     {
-                        vectorIter += Vector256<byte>.Count;
-                        if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                        while ((lfIdx = BitOperations.TrailingZeroCount(foundLF)) == Vector256<byte>.Count)
                         {
-                            goto nonVector;
+                            vectorIter += Vector256<byte>.Count;
+                            if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                            {
+                                goto nonVector;
+                            }
+
+                            vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
+                            foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
+                            foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
                         }
 
-                        vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
-                        foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
-                        foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
+                        uint clearMask = ~(1u << lfIdx);
+                        foundLF &= clearMask;
+                        foundCol &= clearMask;
+                        lfIdx = vectorIter + lfIdx;
                     }
-
-                    uint clearMask = ~(1u << lfIdx);
-                    foundLF &= clearMask;
-                    foundCol &= clearMask;
-                    lfIdx = vectorIter + lfIdx;
-                    Debug.Assert(lfIdx > colIdx);
+                    while (lfIdx < colIdx);
 
                     // Check if header continues on the next line.
 
@@ -914,9 +931,6 @@ namespace NetworkToolkit.Http.Primitives
                 Span<byte> name = buffer[nameStartIdx..colIdx];
                 Span<byte> value = buffer[valueStartIdx..crlfIdx];
 
-                string nameAscii = Encoding.ASCII.GetString(name);
-                string valueAscii = Encoding.ASCII.GetString(value);
-
                 nameStartIdx = lfIdx + 1;
                 headersSink.OnHeader(state, name, value);
                 ProcessKnownHeaders(name, value);
@@ -924,7 +938,7 @@ namespace NetworkToolkit.Http.Primitives
 
         nonVector:
             _readBuffer.Discard(nameStartIdx);
-            return ReadHeadersPortable(requestStream, headersSink, state);
+            return ReadHeadersPortable(headersSink, state);
         }
 
         private void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)

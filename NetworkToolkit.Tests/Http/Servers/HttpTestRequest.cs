@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace NetworkToolkit.Tests.Servers
+namespace NetworkToolkit.Tests.Http.Servers
 {
     internal record HttpTestRequest(
         string Method,

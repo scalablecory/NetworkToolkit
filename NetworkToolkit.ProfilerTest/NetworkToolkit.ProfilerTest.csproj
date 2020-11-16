@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net5.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetworkToolkit\NetworkToolkit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\NetworkToolKit\ArrayBuffer.cs" />
+    <Compile Include="..\NetworkToolKit.Benchmarks\SimpleHttp1Server.cs" />
+  </ItemGroup>
+
+</Project>

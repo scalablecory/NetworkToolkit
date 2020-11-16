@@ -1,13 +1,13 @@
 ﻿using NetworkToolkit.Connections;
 using NetworkToolkit.Http.Primitives;
-using NetworkToolkit.Tests.Servers;
+using NetworkToolkit.Tests.Http.Servers;
 using System;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace NetworkToolkit.Tests
+namespace NetworkToolkit.Tests.Http
 {
     public class Http1Tests : HttpGenericTests
     {

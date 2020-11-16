@@ -4,7 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace NetworkToolkit.Tests.Servers
+namespace NetworkToolkit.Tests.Http.Servers
 {
     internal sealed class Http1TestChunkedStream : TestStreamBase
     {

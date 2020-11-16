@@ -1,12 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace NetworkToolkit
 {
-    internal interface IGatheringStream
+    /// <summary>
+    /// A <see cref="Stream"/> extension that enables gathered writes.
+    /// </summary>
+    public interface IGatheringStream
     {
+        /// <summary>
+        /// Writes a list of buffers as a single I/O.
+        /// </summary>
+        /// <param name="buffers">The buffers to write.</param>
+        /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
+        /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
         ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default);
     }
 }

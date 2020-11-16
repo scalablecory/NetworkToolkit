@@ -1,4 +1,5 @@
 ﻿using NetworkToolkit.Http.Primitives;
+using NetworkToolkit.Tests.Http;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;

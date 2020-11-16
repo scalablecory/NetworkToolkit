@@ -2,7 +2,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace NetworkToolkit.Tests.Servers
+namespace NetworkToolkit.Tests.Http.Servers
 {
     internal sealed class Http1TestLengthlessStream : TestStreamBase
     {

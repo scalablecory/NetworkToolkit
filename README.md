@@ -23,7 +23,7 @@ request.WriteRequest(HttpMethod.Get, new Uri("http://microsoft.com"));
 request.WriteHeader("Accept", "text/html");
 await request.CompleteRequestAsync();
 
-await request.ReadToLastResponseAsync();
+await request.ReadToFinalResponseAsync();
 Console.WriteLine($"Got response {request.StatusCode}.");
 
 if(await request.ReadToHeadersAsync())
