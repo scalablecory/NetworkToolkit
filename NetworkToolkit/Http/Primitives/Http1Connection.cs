@@ -7,9 +7,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -694,9 +698,21 @@ namespace NetworkToolkit.Http.Primitives
 
                 _readBuffer.Commit(readBytes);
             }
+
+            _readFunc =
+                _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
+                (int)requestStream.StatusCode < 200 ? s_ReadResponse : // Informational status code. more responses coming.
+                s_ReadToContent; // Move to content.
         }
 
-        private unsafe bool ReadHeadersImpl(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool ReadHeadersImpl(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        {
+            if (Avx2.IsSupported) return ReadHeadersAvx2(requestStream, headersSink, state);
+            return ReadHeadersPortable(requestStream, headersSink, state);
+        }
+
+        private unsafe bool ReadHeadersPortable(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
         {
             Span<byte> originalBuffer = _readBuffer.ActiveSpan;
             Span<byte> buffer = originalBuffer;
@@ -705,25 +721,18 @@ namespace NetworkToolkit.Http.Primitives
             {
                 if (buffer.Length == 0) goto needMore;
 
-                int crlfSize = 1;
-                switch (buffer[0])
-                {
-                    case (byte)'\r':
-                        if (buffer.Length < 2) goto needMore;
-                        if (buffer[1] != '\n') throw new Exception("Invalid newline, expected CRLF");
-                        ++crlfSize;
-                        goto case (byte)'\n';
-                    case (byte)'\n':
-                        _readBuffer.Discard(Tools.UnsafeByteOffset(originalBuffer, buffer) + crlfSize);
-                        _readFunc =
-                            _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
-                            (int)requestStream.StatusCode < 200 ? s_ReadResponse : // Informational status code. more responses coming.
-                            s_ReadToContent; // Move to content.
-                        return true;
-                }
-
-                int idx = buffer.IndexOf((byte)':');
+                int idx = buffer.IndexOfAny((byte)':', (byte)'\n');
                 if (idx == -1) goto needMore;
+
+                if (buffer[idx] == '\n')
+                {
+                    if (idx > 1 || (idx == 1 && buffer[idx - 1] != '\r'))
+                    {
+                        throw new Exception("Unexpected newline while searching for header.");
+                    }
+                    _readBuffer.Discard(Tools.UnsafeByteOffset(originalBuffer, buffer) + idx + 1);
+                    return true;
+                }
 
                 ReadOnlySpan<byte> headerName = buffer.Slice(0, idx);
 
@@ -743,38 +752,27 @@ namespace NetworkToolkit.Http.Primitives
                     idx = valueIter.IndexOf((byte)'\n');
                     if (idx == -1 || (idx + 1) == valueIter.Length) goto needMore;
 
+                    int crLfIdx = idx != 0 && valueIter[idx - 1] == '\r'
+                        ? idx - 1
+                        : idx;
+
                     // Check if header continues on the next line.
                     if (valueIter[idx + 1] == '\t')
                     {
                         // Replace CRLF with SPSP and loop.
+                        valueIter[crLfIdx] = (byte)' ';
                         valueIter[idx] = (byte)' ';
-                        valueIter[idx + 1] = (byte)' ';
                         valueIter = valueIter.Slice(idx + 2);
                         continue;
                     }
 
                     int valueEndIdxBase = Tools.UnsafeByteOffset(valueStart, valueIter) + idx;
-                    int valueEndIdx = valueIter[idx - 1] == '\r' ? (valueEndIdxBase - 1) : valueEndIdxBase;
+                    int valueEndIdx = Tools.UnsafeByteOffset(valueStart, valueIter) + crLfIdx;
 
                     ReadOnlySpan<byte> headerValue = valueStart.Slice(0, valueEndIdx);
 
                     headersSink.OnHeader(state, headerName, headerValue);
-
-                    if (HeaderNamesEqual(headerName, s_EncodedContentLengthName))
-                    {
-                        if (!TryParseDecimalInteger(headerValue, out _responseContentBytesRemaining))
-                        {
-                            throw new Exception("Response Content-Length header contains a malformed or too-large value.");
-                        }
-                        _responseHasContentLength = true;
-                    }
-                    else if (HeaderNamesEqual(headerName, s_EncodedTransferEncodingName))
-                    {
-                        if (headerValue.SequenceEqual(s_EncodedTransferEncodingChunkedValue))
-                        {
-                            _responseIsChunked = true;
-                        }
-                    }
+                    ProcessKnownHeaders(headerName, headerValue);
 
                     buffer = valueIter.Slice(valueEndIdxBase + 1);
                     break;
@@ -784,6 +782,142 @@ namespace NetworkToolkit.Http.Primitives
         needMore:
             _readBuffer.Discard(Tools.UnsafeByteOffset(originalBuffer, buffer));
             return false;
+        }
+
+        private unsafe bool ReadHeadersAvx2(Http1Request requestStream, IHttpHeadersSink headersSink, object? state)
+        {
+            if (_readBuffer.ActiveLength < Vector256<byte>.Count)
+            {
+                return ReadHeadersPortable(requestStream, headersSink, state);
+            }
+
+            Span<byte> buffer = _readBuffer.ActiveSpan;
+            int vectorIter = 0, nameStartIdx = 0;
+
+            Vector256<byte> maskCol = Vector256.Create((byte)':');
+            Vector256<byte> maskLF = Vector256.Create((byte)'\n');
+            Vector256<byte> vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
+            uint foundCol = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
+            uint foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
+
+            while (true)
+            {
+                int colIdx;
+                while ((colIdx = BitOperations.TrailingZeroCount(foundCol)) == Vector256<byte>.Count)
+                {
+                    vectorIter += Vector256<byte>.Count;
+                    if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                    {
+                        goto nonVector;
+                    }
+
+                    vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
+                    foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
+                    foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
+                }
+
+                foundCol ^= 1u << colIdx;
+                colIdx = vectorIter + colIdx;
+                Debug.Assert (colIdx >= nameStartIdx);
+
+                if (buffer[colIdx] == '\n')
+                {
+                    if (colIdx > nameStartIdx + 1 || (colIdx == nameStartIdx + 1 && buffer[colIdx - 1] != '\r'))
+                    {
+                        throw new Exception("Unexpected newline while searching for header.");
+                    }
+                    _readBuffer.Discard(colIdx + 1);
+                    return true;
+                }
+
+                // Skip OWS.
+                int valueStartIdx = colIdx;
+                byte ch;
+                do
+                {
+                    if (++valueStartIdx == buffer.Length)
+                    {
+                        _readBuffer.Discard(nameStartIdx);
+                        return false;
+                    }
+                    ch = buffer[valueStartIdx];
+                } while (ch == ' ' || ch == '\t');
+
+                int crlfIdx;
+                int lfIdx;
+                do
+                {
+                    while ((lfIdx = BitOperations.TrailingZeroCount(foundLF)) == Vector256<byte>.Count)
+                    {
+                        vectorIter += Vector256<byte>.Count;
+                        if (vectorIter + Vector256<byte>.Count > buffer.Length)
+                        {
+                            goto nonVector;
+                        }
+
+                        vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
+                        foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
+                        foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
+                    }
+
+                    uint clearMask = ~(1u << lfIdx);
+                    foundLF &= clearMask;
+                    foundCol &= clearMask;
+                    lfIdx = vectorIter + lfIdx;
+                    Debug.Assert(lfIdx > colIdx);
+
+                    // Check if header continues on the next line.
+
+                    crlfIdx = lfIdx != 0 && buffer[lfIdx - 1] == '\r'
+                        ? lfIdx - 1
+                        : lfIdx;
+
+                    if (lfIdx + 1 == buffer.Length)
+                    {
+                        return false;
+                    }
+
+                    if (buffer[lfIdx + 1] == '\t')
+                    {
+                        buffer[crlfIdx] = (byte)' ';
+                        buffer[lfIdx] = (byte)' ';
+                        continue;
+                    }
+                } while (false);
+
+                Span<byte> name = buffer[nameStartIdx..colIdx];
+                Span<byte> value = buffer[valueStartIdx..crlfIdx];
+
+                string nameAscii = Encoding.ASCII.GetString(name);
+                string valueAscii = Encoding.ASCII.GetString(value);
+
+                nameStartIdx = lfIdx + 1;
+                headersSink.OnHeader(state, name, value);
+                ProcessKnownHeaders(name, value);
+            }
+
+        nonVector:
+            _readBuffer.Discard(nameStartIdx);
+            return ReadHeadersPortable(requestStream, headersSink, state);
+        }
+
+        private void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)
+        {
+            if (HeaderNamesEqual(headerName, s_EncodedContentLengthName))
+            {
+                if (!TryParseDecimalInteger(headerValue, out _responseContentBytesRemaining))
+                {
+                    throw new Exception("Response Content-Length header contains a malformed or too-large value.");
+                }
+                _responseHasContentLength = true;
+            }
+            else if (HeaderNamesEqual(headerName, s_EncodedTransferEncodingName))
+            {
+                if (headerValue.SequenceEqual(s_EncodedTransferEncodingChunkedValue))
+                {
+                    _responseIsChunked = true;
+                }
+            }
         }
 
         private static bool HeaderNamesEqual(ReadOnlySpan<byte> wireValue, ReadOnlySpan<byte> expectedValueLowerCase)

@@ -50,7 +50,7 @@ namespace NetworkToolkit.Tests.Servers
             string pathAndQuery = match.Groups[2].Value;
             int versionMajor = int.Parse(match.Groups[3].Value, NumberStyles.None, CultureInfo.InvariantCulture);
             int versionMinor = int.Parse(match.Groups[4].Value, NumberStyles.None, CultureInfo.InvariantCulture);
-            Version version = new Version(versionMajor, versionMinor);
+            var version = new Version(versionMajor, versionMinor);
 
             TestHeadersSink headers = await ReadHeadersAsync().ConfigureAwait(false);
 
@@ -116,10 +116,6 @@ namespace NetworkToolkit.Tests.Servers
         private bool TryReadLine([NotNullWhen(true)] out string? line)
         {
             ReadOnlySpan<byte> span = _readBuffer.ActiveSpan;
-
-            string spanString = Encoding.ASCII.GetString(span);
-            spanString.ToString();
-
 
             int endIdx = span.IndexOf(new[] { (byte)'\r', (byte)'\n' });
             if (endIdx == -1)

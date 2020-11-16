@@ -2,6 +2,7 @@
 using NetworkToolkit.Tests.Servers;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -14,28 +15,39 @@ namespace NetworkToolkit.Tests
         internal abstract Task RunSingleStreamTest(Func<ValueHttpRequest, Uri, Task> clientFunc, Func<HttpTestStream, Task> serverFunc, int? millisecondsTimeout = null);
 
         [Theory]
-        [MemberData(nameof(HeadersData))]
-        public async Task HeadersSend_Success(TestHeadersSink requestHeaders)
+        [MemberData(nameof(NonChunkedData))]
+        public async Task Send_NonChunkedRequest_Success(int testIdx, TestHeadersSink requestHeaders, List<string> requestContent)
         {
+            _ = testIdx; // only used to assist debugging.
+
             await RunSingleStreamTest(
                 async (clientRequest, serverUri) =>
                 {
-                    clientRequest.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
-                    clientRequest.WriteRequest(HttpMethod.Get, serverUri);
+                    long contentLength = requestContent.Sum(x => (long)x.Length);
+                    clientRequest.ConfigureRequest(contentLength, hasTrailingHeaders: false);
+                    clientRequest.WriteRequest(HttpMethod.Post, serverUri);
+                    clientRequest.WriteHeader("Content-Length", contentLength.ToString(CultureInfo.InvariantCulture));
                     clientRequest.WriteHeaders(requestHeaders);
+                    foreach (string content in requestContent)
+                    {
+                        await clientRequest.WriteContentAsync(content);
+                    }
                     await clientRequest.CompleteRequestAsync();
                 },
                 async serverStream =>
                 {
                     HttpTestFullRequest request = await serverStream.ReceiveAndSendAsync();
                     Assert.True(request.Headers.Contains(requestHeaders));
+                    Assert.Equal(string.Join("", requestContent), request.Content);
                 });
         }
 
         [Theory]
-        [MemberData(nameof(HeadersData))]
-        public async Task HeadersReceived_Success(TestHeadersSink expectedResponseHeaders)
+        [MemberData(nameof(NonChunkedData))]
+        public async Task Receive_NonChunkedResponse_Success(int testIdx, TestHeadersSink responseHeaders, List<string> responseContent)
         {
+            _ = testIdx; // only used to assist debugging.
+
             await RunSingleStreamTest(
                 async (clientRequest, serverUri) =>
                 {
@@ -44,35 +56,31 @@ namespace NetworkToolkit.Tests
                     await clientRequest.CompleteRequestAsync();
 
                     TestHeadersSink actualResponseHeaders = await clientRequest.ReadAllHeadersAsync();
-                    Assert.True(actualResponseHeaders.Contains(expectedResponseHeaders));
+                    Assert.True(actualResponseHeaders.Contains(responseHeaders));
+
+                    string actualResponseContent = await clientRequest.ReadAllContentAsStringAsync();
+                    Assert.Equal(string.Join("", responseContent), actualResponseContent);
                 },
                 async serverStream =>
                 {
-                    await serverStream.ReceiveAndSendAsync(headers: expectedResponseHeaders);
+                    await serverStream.ReceiveAndSendAsync(headers: responseHeaders, content: string.Join("", responseContent));
                 });
         }
 
-        public static TheoryData<TestHeadersSink> HeadersData() => new TheoryData<TestHeadersSink>
+        public static IEnumerable<object[]> NonChunkedData()
         {
-            new TestHeadersSink
+            int testIdx = 0;
+
+            foreach (TestHeadersSink headers in HeadersData())
             {
-            },
-            new TestHeadersSink
-            {
-                { "foo", "1234" }
-            },
-            new TestHeadersSink
-            {
-                { "foo", "5678" },
-                { "bar", "9012" }
-            },
-            new TestHeadersSink
-            {
-                { "foo", "3456" },
-                { "bar", "7890" },
-                { "quz", "1234" }
+                foreach (List<string> contents in ContentData())
+                {
+                    ++testIdx;
+
+                    yield return new object[] { testIdx, headers, contents };
+                }
             }
-        };
+        }
 
         [Theory]
         [MemberData(nameof(ChunkedData))]
@@ -86,6 +94,7 @@ namespace NetworkToolkit.Tests
                     long contentLength = requestContent.Sum(x => (long)x.Length);
                     client.ConfigureRequest(contentLength, hasTrailingHeaders: true);
                     client.WriteRequest(HttpMethod.Post, serverUri);
+                    client.WriteHeader("Content-Length", contentLength.ToString(CultureInfo.InvariantCulture));
                     client.WriteHeaders(requestHeaders);
 
                     foreach (string content in requestContent)
@@ -154,15 +163,12 @@ namespace NetworkToolkit.Tests
         {
             int testIdx = 0;
 
-            foreach (object[] headersTheoryData in HeadersData())
+            foreach (TestHeadersSink headers in HeadersData())
             {
-                TestHeadersSink headers = (TestHeadersSink)headersTheoryData[0];
-
-                foreach (List<string> contents in GetContents())
+                foreach (List<string> contents in ContentData())
                 {
-                    foreach (object[] trailersTheoryData in HeadersData())
+                    foreach (TestHeadersSink trailers in HeadersData())
                     {
-                        TestHeadersSink trailers = (TestHeadersSink)trailersTheoryData[0];
                         var trailersToSend = new TestHeadersSink();
                         foreach (var kvp in trailers)
                         {
@@ -175,15 +181,36 @@ namespace NetworkToolkit.Tests
                     }
                 }
             }
-
-            static IEnumerable<List<string>> GetContents() =>
-                new[]
-                {
-                    new List<string> { },
-                    new List<string> { "foo" },
-                    new List<string> { "foo", "barbar" },
-                    new List<string> { "foo", "barbar", "bazbazbaz" }
-                };
         }
+
+        private static IEnumerable<TestHeadersSink> HeadersData() => new[]
+        {
+            new TestHeadersSink
+            {
+            },
+            new TestHeadersSink
+            {
+                { "foo", "1234" }
+            },
+            new TestHeadersSink
+            {
+                { "foo", "5678" },
+                { "bar", "9012" }
+            },
+            new TestHeadersSink
+            {
+                { "foo", "3456" },
+                { "bar", "7890" },
+                { "quz", "1234" }
+            }
+        };
+
+        private static IEnumerable<List<string>> ContentData() => new[]
+        {
+            new List<string> { },
+            new List<string> { "foo" },
+            new List<string> { "foo", "barbar" },
+            new List<string> { "foo", "barbar", "bazbazbaz" }
+        };
     }
 }
