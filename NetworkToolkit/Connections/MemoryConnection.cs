@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -55,8 +56,8 @@ namespace NetworkToolkit.Connections
 
         private sealed class MemoryConnectionStream : Stream, IGatheringStream
         {
-            readonly PipeReader _reader;
-            readonly PipeWriter _writer;
+            PipeReader _reader;
+            PipeWriter? _writer;
 
             public override bool CanRead => true;
 
@@ -76,15 +77,19 @@ namespace NetworkToolkit.Connections
 
             protected override void Dispose(bool disposing)
             {
-                if (disposing)
+                if (disposing && _writer != null)
                 {
                     _writer.Complete();
                     _reader.Complete();
+                    _writer = null!;
+                    _reader = null!;
                 }
             }
 
             internal ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
             {
+                if (_writer == null) return default;
+
                 try
                 {
                     _writer.Complete();
@@ -101,17 +106,15 @@ namespace NetworkToolkit.Connections
 
             public override int Read(Span<byte> buffer)
             {
+                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+
                 try
                 {
                     return FinishRead(buffer, Tools.BlockForResult(_reader.ReadAsync()));
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
                 catch (Exception ex)
                 {
-                    throw new IOException("Read failed. See InnerException for details.", ex);
+                    throw new IOException(ex.Message, ex);
                 }
             }
 
@@ -126,22 +129,20 @@ namespace NetworkToolkit.Connections
 
             public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
             {
+                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+
                 try
                 {
                     ReadResult result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
                     return FinishRead(buffer.Span, result);
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
                 catch (Exception ex)
                 {
-                    throw new IOException("Read failed. See InnerException for details.", ex);
+                    throw new IOException(ex.Message, ex);
                 }
             }
 
-            private int FinishRead(Span<byte> buffer, ReadResult result)
+            private int FinishRead(Span<byte> buffer, in ReadResult result)
             {
                 if (result.IsCanceled)
                 {
@@ -165,7 +166,7 @@ namespace NetworkToolkit.Connections
                         return actual;
                     }
 
-                    Debug.Assert(result.IsCompleted, "Pipe should never return a 0-length buffer.");
+                    Debug.Assert(result.IsCompleted, "An uncompleted Pipe should never return a 0-length buffer.");
                     return 0;
                 }
                 finally
@@ -179,15 +180,23 @@ namespace NetworkToolkit.Connections
 
             public override void Write(ReadOnlySpan<byte> buffer)
             {
-                buffer.CopyTo(_writer.GetSpan(buffer.Length));
-                _writer.Advance(buffer.Length);
+                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
 
-                ValueTask<FlushResult> resTask = _writer.FlushAsync();
-                FlushResult res = resTask.IsCompleted ? resTask.GetAwaiter().GetResult() : resTask.AsTask().GetAwaiter().GetResult();
-
-                if (res.IsCanceled)
+                try
                 {
-                    throw new OperationCanceledException();
+                    buffer.CopyTo(_writer.GetSpan(buffer.Length));
+                    _writer.Advance(buffer.Length);
+
+                    FlushResult res = Tools.BlockForResult(_writer.FlushAsync());
+
+                    if (res.IsCanceled)
+                    {
+                        throw new SocketException((int)SocketError.OperationAborted);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw new IOException(ex.Message, ex);
                 }
             }
 
@@ -196,6 +205,8 @@ namespace NetworkToolkit.Connections
 
             public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
             {
+                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+
                 try
                 {
                     FlushResult res = await _writer.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
@@ -207,12 +218,14 @@ namespace NetworkToolkit.Connections
                 }
                 catch (Exception ex)
                 {
-                    throw new IOException("Write failed. See InnerException for details.", ex);
+                    throw new IOException(ex.Message, ex);
                 }
             }
 
             public async ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
             {
+                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+
                 try
                 {
                     foreach (ReadOnlyMemory<byte> buffer in buffers)
@@ -230,7 +243,7 @@ namespace NetworkToolkit.Connections
                 }
                 catch (Exception ex)
                 {
-                    throw new IOException("Write failed. See InnerException for details.", ex);
+                    throw new IOException(ex.Message, ex);
                 }
             }
 
@@ -240,7 +253,6 @@ namespace NetworkToolkit.Connections
 
             public override Task FlushAsync(CancellationToken cancellationToken)
             {
-                if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
                 return Task.CompletedTask;
             }
 

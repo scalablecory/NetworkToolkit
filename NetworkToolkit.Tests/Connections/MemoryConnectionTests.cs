@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -25,7 +26,7 @@ namespace NetworkToolkit.Tests.Connections
             {
                 await RunClientServer(async () =>
                 {
-                    using (var writer = new StreamWriter(clientConnection.Stream))
+                    using (var writer = new StreamWriter(clientConnection.Stream, leaveOpen: true))
                     {
                         await writer.WriteLineAsync(ClientTestValue);
                     }
@@ -39,7 +40,7 @@ namespace NetworkToolkit.Tests.Connections
                 },
                 async () =>
                 {
-                    using (var writer = new StreamWriter(serverConnection.Stream))
+                    using (var writer = new StreamWriter(serverConnection.Stream, leaveOpen: true))
                     {
                         await writer.WriteLineAsync(ServerTestValue);
                     }
