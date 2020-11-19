@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 #nullable enable
+using NetworkToolkit.Http.Primitives;
 using System;
 using System.Buffers;
 using System.Diagnostics;
@@ -27,10 +28,13 @@ namespace NetworkToolkit
     [StructLayout(LayoutKind.Auto)]
     internal struct VectorArrayBuffer : IDisposable
     {
-        // Pad the front and back of the array with enough bytes to ensure we
+        // It is assumed that (due to how virtual memory works) we do
+        // not need to add padding to the front of the buffer.
+        private const int PrefixPaddingLength = 0;
+        // Pad the back of the array with enough bytes to ensure we
         // can always safely read an Vector256 at any index within returned spans.
-        private static int PerSidePaddingLength => Vector256<byte>.Count - 1;
-        private static int TotalPaddingLength => PerSidePaddingLength * 2;
+        private static int SuffixPaddingLength => Http1Connection.HeaderBufferPadding;
+        private static int TotalPaddingLength => PrefixPaddingLength + SuffixPaddingLength;
 
         private byte[] _bytes;
         private int _activeStart;
@@ -61,12 +65,12 @@ namespace NetworkToolkit
         }
 
         public int ActiveLength => _availableStart - _activeStart;
-        public Span<byte> ActiveSpan => new Span<byte>(_bytes, _activeStart + PerSidePaddingLength, ActiveLength);
-        public Memory<byte> ActiveMemory => new Memory<byte>(_bytes, _activeStart + PerSidePaddingLength, ActiveLength);
+        public Span<byte> ActiveSpan => new Span<byte>(_bytes, _activeStart + PrefixPaddingLength, ActiveLength);
+        public Memory<byte> ActiveMemory => new Memory<byte>(_bytes, _activeStart + PrefixPaddingLength, ActiveLength);
 
         public int AvailableLength => Capacity - _availableStart;
-        public Span<byte> AvailableSpan => new Span<byte>(_bytes, _availableStart + PerSidePaddingLength, AvailableLength);
-        public Memory<byte> AvailableMemory => new Memory<byte>(_bytes, _availableStart + PerSidePaddingLength, AvailableLength);
+        public Span<byte> AvailableSpan => new Span<byte>(_bytes, _availableStart + PrefixPaddingLength, AvailableLength);
+        public Memory<byte> AvailableMemory => new Memory<byte>(_bytes, _availableStart + PrefixPaddingLength, AvailableLength);
 
         public int Capacity => _bytes.Length - TotalPaddingLength;
 
@@ -76,8 +80,14 @@ namespace NetworkToolkit
             array.AsSpan().Clear();
 
             // zero out the prefix and suffix padding, so they won't match any compares later on.
-            array.AsSpan(0, PerSidePaddingLength).Clear();
-            array.AsSpan(array.Length - PerSidePaddingLength, PerSidePaddingLength).Clear();
+            if(PrefixPaddingLength != 0)
+            {
+#pragma warning disable CS0162 // Unreachable code detected
+                array.AsSpan(0, PrefixPaddingLength).Clear();
+#pragma warning restore CS0162 // Unreachable code detected
+            }
+
+            array.AsSpan(array.Length - SuffixPaddingLength, SuffixPaddingLength).Clear();
 
             return array;
         }
@@ -115,7 +125,7 @@ namespace NetworkToolkit
             if (byteCount <= totalFree)
             {
                 // We can free up enough space by just shifting the bytes down, so do so.
-                Buffer.BlockCopy(_bytes, _activeStart + PerSidePaddingLength, _bytes, PerSidePaddingLength, ActiveLength);
+                Buffer.BlockCopy(_bytes, _activeStart + PrefixPaddingLength, _bytes, PrefixPaddingLength, ActiveLength);
                 _availableStart = ActiveLength;
                 _activeStart = 0;
                 Debug.Assert(byteCount <= AvailableLength);
@@ -136,7 +146,7 @@ namespace NetworkToolkit
 
             if (ActiveLength != 0)
             {
-                Buffer.BlockCopy(oldBytes, _activeStart + PerSidePaddingLength, newBytes, PerSidePaddingLength, ActiveLength);
+                Buffer.BlockCopy(oldBytes, _activeStart + PrefixPaddingLength, newBytes, PrefixPaddingLength, ActiveLength);
             }
 
             _availableStart = ActiveLength;

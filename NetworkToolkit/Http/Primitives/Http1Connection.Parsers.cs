@@ -15,7 +15,7 @@ namespace NetworkToolkitInternal.Http.Primitives
     public partial class Http1Connection
     {
         /// <summary>
-        /// The amount of padding, in terms of valid address space before and after the buffer header parsing is done from.
+        /// The amount of padding, in terms of valid address space after the buffer header parsing is done from.
         /// </summary>
         public static int HeaderBufferPadding => Vector256<byte>.Count - 1;
 
@@ -102,7 +102,8 @@ namespace NetworkToolkitInternal.Http.Primitives
         }
 
         /// <remarks>
-        /// This method REQUIRES (32-1) bytes of valid address space in front of and after <paramref name="buffer"/>.
+        /// This method REQUIRES (32-1) bytes of valid address space after <paramref name="buffer"/>.
+        /// It also assumes that it can always step backwards to a 32-byte aligned address.
         /// It is built to be used with VectorArrayBuffer, which does this.
         /// </remarks>
         internal unsafe bool ReadHeadersAvx2(Span<byte> buffer, IHttpHeadersSink headersSink, object? state, out int bytesConsumed)
@@ -115,7 +116,6 @@ namespace NetworkToolkitInternal.Http.Primitives
             fixed (byte* vectorBegin = buffer)
             {
                 // align to a 32 byte address for optimal loads.
-                // This is why padding is required.
                 byte* vectorEnd = vectorBegin + buffer.Length;
                 byte* vectorIter = (byte*)((nint)vectorBegin & ~(32 - 1));
 
