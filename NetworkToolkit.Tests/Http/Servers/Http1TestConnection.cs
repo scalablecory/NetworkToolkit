@@ -25,7 +25,7 @@ namespace NetworkToolkit.Tests.Http.Servers
         {
             _connection = connection;
             _stream = connection.Stream;
-            _readBuffer = new ArrayBuffer(4096, usePool: true);
+            _readBuffer = new ArrayBuffer(4096);
         }
 
         public override Task<HttpTestStream> AcceptStreamAsync()

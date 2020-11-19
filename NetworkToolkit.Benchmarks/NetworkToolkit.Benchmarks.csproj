@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\NetworkToolKit\ArrayBuffer.cs" />
+    <Compile Include="..\NetworkToolKit\Http\Primitives\Http1Connection.Parsers.cs" />
   </ItemGroup>
 
 </Project>

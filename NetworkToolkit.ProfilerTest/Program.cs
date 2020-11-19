@@ -22,7 +22,7 @@ namespace NetworkToolkit.ProfilerTest
             await using SimpleHttp1Server server = new(listener, triggerBytes, responseBytes);
 
             await using Connection connection = await connectionFactory.ConnectAsync(listener.EndPoint!);
-            await using HttpConnection httpConnection = new Http1Connection(connection);
+            await using HttpConnection httpConnection = new Http1Connection(connection.Stream);
 
             if (!Debugger.IsAttached)
             {

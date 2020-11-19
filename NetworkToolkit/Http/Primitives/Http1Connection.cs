@@ -1,5 +1,4 @@
-﻿using NetworkToolkit.Connections;
-using System;
+﻿using System;
 using System.Buffers;
 using System.Buffers.Text;
 using System.Collections.Generic;
@@ -7,12 +6,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,7 +17,7 @@ namespace NetworkToolkit.Http.Primitives
     /// <summary>
     /// A HTTP/1 connection.
     /// </summary>
-    public class Http1Connection : HttpBaseConnection
+    public partial class Http1Connection : HttpBaseConnection
     {
         private static ushort s_encodedCrLf => BitConverter.IsLittleEndian ? 0x0A0D : 0x0D0A; // "\r\n"
         private static ushort s_encodedColonSpace => BitConverter.IsLittleEndian ? 0x203A : 0x3A20; // ": "
@@ -45,9 +41,9 @@ namespace NetworkToolkit.Http.Primitives
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipTrailingHeaders = (c, r, t) => c.SkipHeadersAsync(r, t);
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToEndOfStream = (c, r, t) => { r.SetCurrentReadType(HttpReadType.EndOfStream); return new ValueTask<HttpReadType>(HttpReadType.EndOfStream); };
 
-        private readonly Connection _connection;
         internal readonly Stream _stream;
-        internal ArrayBuffer _readBuffer, _writeBuffer;
+        internal VectorArrayBuffer _readBuffer;
+        internal ArrayBuffer _writeBuffer;
         private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new List<ReadOnlyMemory<byte>>(3);
         private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk;
         private WriteState _writeState;
@@ -68,21 +64,20 @@ namespace NetworkToolkit.Http.Primitives
         }
 
         /// <summary>
-        /// Instantiates a new <see cref="Http1Connection"/> over a given <see cref="Connection"/>.
+        /// Instantiates a new <see cref="Http1Connection"/> over a given <see cref="Stream"/>.
         /// </summary>
-        /// <param name="connection">The <see cref="Connection"/> used.</param>
-        public Http1Connection(Connection connection)
+        /// <param name="stream">The <see cref="Stream"/> to read and write to.</param>
+        public Http1Connection(Stream stream)
         {
-            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-            _stream = connection.Stream;
-            _readBuffer = new ArrayBuffer(initialSize: 4096, usePool: true);
-            _writeBuffer = new ArrayBuffer(initialSize: 4096, usePool: true);
+            _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            _readBuffer = new VectorArrayBuffer(initialSize: 4096);
+            _writeBuffer = new ArrayBuffer(initialSize: 64);
         }
 
         /// <inheritdoc/>
         public override async ValueTask DisposeAsync(CancellationToken cancellationToken)
         {
-            await _connection.DisposeAsync(cancellationToken).ConfigureAwait(false);
+            await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
             _readBuffer.Dispose();
             _writeBuffer.Dispose();
         }
@@ -723,8 +718,10 @@ namespace NetworkToolkit.Http.Primitives
                 return;
             }
 
-            while (!ReadHeadersImpl(headersSink, state))
+            int bytesConsumed;
+            while (!ReadHeadersImpl(_readBuffer.ActiveSpan, headersSink, state, out bytesConsumed))
             {
+                _readBuffer.Discard(bytesConsumed);
                 _readBuffer.EnsureAvailableSpace(1);
                 
                 int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
@@ -736,6 +733,7 @@ namespace NetworkToolkit.Http.Primitives
 
                 _readBuffer.Commit(readBytes);
             }
+            _readBuffer.Discard(bytesConsumed);
 
             _readFunc =
                 _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
@@ -743,205 +741,7 @@ namespace NetworkToolkit.Http.Primitives
                 s_ReadToContent; // Move to content.
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool ReadHeadersImpl(IHttpHeadersSink headersSink, object? state)
-        {
-            //if (Avx2.IsSupported) return ReadHeadersAvx2(headersSink, state);
-            return ReadHeadersPortable(headersSink, state);
-        }
-
-        private unsafe bool ReadHeadersPortable(IHttpHeadersSink headersSink, object? state)
-        {
-            Span<byte> buffer = _readBuffer.ActiveSpan;
-
-            while (true)
-            {
-                if (buffer.Length == 0) goto needMore;
-
-                int idx = buffer.IndexOfAny((byte)':', (byte)'\n');
-                if (idx == -1) goto needMore;
-
-                if (buffer[idx] == '\n')
-                {
-                    if (idx > 1 || (idx == 1 && buffer[idx - 1] != '\r'))
-                    {
-                        throw new Exception("Unexpected newline while searching for header.");
-                    }
-                    _readBuffer.Discard(_readBuffer.ActiveLength - buffer.Length + idx + 1);
-                    return true;
-                }
-
-                ReadOnlySpan<byte> headerName = buffer.Slice(0, idx);
-
-                // Skip OWS.
-                byte ch;
-                do
-                {
-                    if (++idx == buffer.Length) goto needMore;
-                    ch = buffer[idx];
-                } while (ch == ' ' || ch == '\t');
-
-                Span<byte> valueStart = buffer.Slice(idx);
-                Span<byte> valueIter = valueStart;
-
-                while (true)
-                {
-                    idx = valueIter.IndexOf((byte)'\n');
-                    if (idx == -1 || (idx + 1) == valueIter.Length) goto needMore;
-
-                    int crLfIdx = idx != 0 && valueIter[idx - 1] == '\r'
-                        ? idx - 1
-                        : idx;
-
-                    // Check if header continues on the next line.
-                    if (valueIter[idx + 1] == '\t')
-                    {
-                        // Replace CRLF with SPSP and loop.
-                        valueIter[crLfIdx] = (byte)' ';
-                        valueIter[idx] = (byte)' ';
-                        valueIter = valueIter.Slice(idx + 2);
-                        continue;
-                    }
-
-                    int valueEndIdxBase = Tools.UnsafeByteOffset(valueStart, valueIter) + idx;
-                    int valueEndIdx = Tools.UnsafeByteOffset(valueStart, valueIter) + crLfIdx;
-
-                    ReadOnlySpan<byte> headerValue = valueStart.Slice(0, valueEndIdx);
-
-                    headersSink.OnHeader(state, headerName, headerValue);
-                    ProcessKnownHeaders(headerName, headerValue);
-
-                    buffer = valueIter.Slice(valueEndIdxBase + 1);
-                    break;
-                }
-            }
-
-        needMore:
-            _readBuffer.Discard(_readBuffer.ActiveLength - buffer.Length);
-            return false;
-        }
-
-        private unsafe bool ReadHeadersAvx2(IHttpHeadersSink headersSink, object? state)
-        {
-            if (_readBuffer.ActiveLength < Vector256<byte>.Count)
-            {
-                return ReadHeadersPortable(headersSink, state);
-            }
-
-            Span<byte> buffer = _readBuffer.ActiveSpan;
-            int vectorIter = 0, nameStartIdx = 0;
-
-            Vector256<byte> maskCol = Vector256.Create((byte)':');
-            Vector256<byte> maskLF = Vector256.Create((byte)'\n');
-            Vector256<byte> vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
-            uint foundCol = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
-            uint foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
-
-            while (true)
-            {
-                int colIdx;
-                do
-                {
-                    while ((colIdx = BitOperations.TrailingZeroCount(foundCol)) == Vector256<byte>.Count)
-                    {
-                        vectorIter += Vector256<byte>.Count;
-                        if (vectorIter + Vector256<byte>.Count > buffer.Length)
-                        {
-                            goto nonVector;
-                        }
-
-                        vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
-                        foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
-                        foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
-                    }
-
-                    foundCol ^= 1u << colIdx;
-                    colIdx = vectorIter + colIdx;
-                }
-                while (colIdx < nameStartIdx);
-
-                if (buffer[colIdx] == '\n')
-                {
-                    if (colIdx > nameStartIdx + 1 || (colIdx == nameStartIdx + 1 && buffer[colIdx - 1] != '\r'))
-                    {
-                        throw new Exception("Unexpected newline while searching for header.");
-                    }
-                    _readBuffer.Discard(colIdx + 1);
-                    return true;
-                }
-
-                // Skip OWS.
-                int valueStartIdx = colIdx;
-                byte ch;
-                do
-                {
-                    if (++valueStartIdx == buffer.Length)
-                    {
-                        _readBuffer.Discard(nameStartIdx);
-                        return false;
-                    }
-                    ch = buffer[valueStartIdx];
-                } while (ch == ' ' || ch == '\t');
-
-                int crlfIdx;
-                int lfIdx;
-                do
-                {
-                    do
-                    {
-                        while ((lfIdx = BitOperations.TrailingZeroCount(foundLF)) == Vector256<byte>.Count)
-                        {
-                            vectorIter += Vector256<byte>.Count;
-                            if (vectorIter + Vector256<byte>.Count > buffer.Length)
-                            {
-                                goto nonVector;
-                            }
-
-                            vector = Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref MemoryMarshal.GetReference(buffer), (nint)(uint)vectorIter));
-                            foundLF = (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskLF));
-                            foundCol = foundLF | (uint)Avx2.MoveMask(Avx2.CompareEqual(vector, maskCol));
-                        }
-
-                        uint clearMask = ~(1u << lfIdx);
-                        foundLF &= clearMask;
-                        foundCol &= clearMask;
-                        lfIdx = vectorIter + lfIdx;
-                    }
-                    while (lfIdx < colIdx);
-
-                    // Check if header continues on the next line.
-
-                    crlfIdx = lfIdx != 0 && buffer[lfIdx - 1] == '\r'
-                        ? lfIdx - 1
-                        : lfIdx;
-
-                    if (lfIdx + 1 == buffer.Length)
-                    {
-                        return false;
-                    }
-
-                    if (buffer[lfIdx + 1] == '\t')
-                    {
-                        buffer[crlfIdx] = (byte)' ';
-                        buffer[lfIdx] = (byte)' ';
-                        continue;
-                    }
-                } while (false);
-
-                Span<byte> name = buffer[nameStartIdx..colIdx];
-                Span<byte> value = buffer[valueStartIdx..crlfIdx];
-
-                nameStartIdx = lfIdx + 1;
-                headersSink.OnHeader(state, name, value);
-                ProcessKnownHeaders(name, value);
-            }
-
-        nonVector:
-            _readBuffer.Discard(nameStartIdx);
-            return ReadHeadersPortable(headersSink, state);
-        }
-
-        private void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)
+        partial void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)
         {
             if (HeaderNamesEqual(headerName, s_EncodedContentLengthName))
             {

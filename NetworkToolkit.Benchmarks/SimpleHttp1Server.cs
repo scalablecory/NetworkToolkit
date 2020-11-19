@@ -41,7 +41,7 @@ namespace NetworkToolkit.Benchmarks
             try
             {
                 await using (connection.ConfigureAwait(false))
-                using (var readBuffer = new ArrayBuffer(4096, usePool: true))
+                using (var readBuffer = new ArrayBuffer(4096))
                 {
                     Stream stream = connection.Stream;
 

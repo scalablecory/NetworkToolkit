@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#nullable enable
 using System;
 using System.Buffers;
 using System.Diagnostics;
@@ -10,20 +9,15 @@ using System.Runtime.InteropServices;
 
 namespace NetworkToolkit
 {
-    // Warning: Mutable struct!
-    // The purpose of this struct is to simplify buffer management.
-    // It manages a sliding buffer where bytes can be added at the end and removed at the beginning.
-    // [ActiveSpan/Memory] contains the current buffer contents; these bytes will be preserved
-    // (copied, if necessary) on any call to EnsureAvailableBytes.
-    // [AvailableSpan/Memory] contains the available bytes past the end of the current content,
-    // and can be written to in order to add data to the end of the buffer.
-    // Commit(byteCount) will extend the ActiveSpan by [byteCount] bytes into the AvailableSpan.
-    // Discard(byteCount) will discard [byteCount] bytes as the beginning of the ActiveSpan.
-
+    /// <summary>
+    /// A buffer used to assist with parsing/serialization when sending and receiving data.
+    /// </summary>
+    /// <remarks>
+    /// This is a mutable buffer. Copying and disposing twice will corrupt array pool.
+    /// </remarks>
     [StructLayout(LayoutKind.Auto)]
-    internal struct ArrayBuffer : IDisposable
+    public struct ArrayBuffer : IDisposable
     {
-        private readonly bool _usePool;
         private byte[] _bytes;
         private int _activeStart;
         private int _availableStart;
@@ -31,41 +25,71 @@ namespace NetworkToolkit
         // Invariants:
         // 0 <= _activeStart <= _availableStart <= bytes.Length
 
-        public ArrayBuffer(int initialSize, bool usePool = false)
+        /// <summary>
+        /// Instantiates a new <see cref="ArrayBuffer"/>.
+        /// </summary>
+        /// <param name="initialSize">The initial size of the buffer.</param>
+        public ArrayBuffer(int initialSize)
         {
-            _usePool = usePool;
-            _bytes = usePool ? ArrayPool<byte>.Shared.Rent(initialSize) : new byte[initialSize];
+            _bytes = ArrayPool<byte>.Shared.Rent(initialSize);
             _activeStart = 0;
             _availableStart = 0;
         }
 
+        /// <inheritdoc/>
         public void Dispose()
         {
             _activeStart = 0;
             _availableStart = 0;
 
-            if (_usePool)
-            {
-                byte[] array = _bytes;
-                _bytes = null!;
+            byte[] array = _bytes;
 
-                if (array != null)
-                {
-                    ArrayPool<byte>.Shared.Return(array, true);
-                }
+            if (array != null)
+            {
+                _bytes = null!;
+                ArrayPool<byte>.Shared.Return(array);
             }
         }
 
+        /// <summary>
+        /// The number of bytes committed to the buffer.
+        /// </summary>
         public int ActiveLength => _availableStart - _activeStart;
+
+        /// <summary>
+        /// The bytes committed to the buffer.
+        /// </summary>
         public Span<byte> ActiveSpan => new Span<byte>(_bytes, _activeStart, _availableStart - _activeStart);
-        public ReadOnlySpan<byte> ActiveReadOnlySpan => new ReadOnlySpan<byte>(_bytes, _activeStart, _availableStart - _activeStart);
-        public int AvailableLength => _bytes.Length - _availableStart;
-        public Span<byte> AvailableSpan => new Span<byte>(_bytes, _availableStart, AvailableLength);
+
+        /// <summary>
+        /// The bytes committed to the buffer.
+        /// </summary>
         public Memory<byte> ActiveMemory => new Memory<byte>(_bytes, _activeStart, _availableStart - _activeStart);
+
+        /// <summary>
+        /// The number of free bytes available in the buffer.
+        /// </summary>
+        public int AvailableLength => _bytes.Length - _availableStart;
+
+        /// <summary>
+        /// Free bytes in the buffer.
+        /// </summary>
+        public Span<byte> AvailableSpan => new Span<byte>(_bytes, _availableStart, AvailableLength);
+
+        /// <summary>
+        /// Free bytes in the buffer.
+        /// </summary>
         public Memory<byte> AvailableMemory => new Memory<byte>(_bytes, _availableStart, _bytes.Length - _availableStart);
 
+        /// <summary>
+        /// The total capacity of the buffer.
+        /// </summary>
         public int Capacity => _bytes.Length;
 
+        /// <summary>
+        /// Discards a number of active bytes.
+        /// </summary>
+        /// <param name="byteCount">The number of bytes to discard.</param>
         public void Discard(int byteCount)
         {
             Debug.Assert(byteCount <= ActiveLength, $"Expected {byteCount} <= {ActiveLength}");
@@ -78,13 +102,20 @@ namespace NetworkToolkit
             }
         }
 
+        /// <summary>
+        /// Commits a number of bytes from Available to Active.
+        /// </summary>
+        /// <param name="byteCount">The number of bytes to commit.</param>
         public void Commit(int byteCount)
         {
             Debug.Assert(byteCount <= AvailableLength);
             _availableStart += byteCount;
         }
 
-        // Ensure at least [byteCount] bytes to write to.
+        /// <summary>
+        /// Ensures <see cref="AvailableLength"/> is at least <paramref name="byteCount"/>.
+        /// </summary>
+        /// <param name="byteCount">The minimum number of bytes to make available.</param>
         public void EnsureAvailableSpace(int byteCount)
         {
             if (byteCount > AvailableLength)
@@ -115,9 +146,7 @@ namespace NetworkToolkit
                 newSize *= 2;
             } while (newSize < desiredSize);
 
-            byte[] newBytes = _usePool ?
-                ArrayPool<byte>.Shared.Rent(newSize) :
-                new byte[newSize];
+            byte[] newBytes = ArrayPool<byte>.Shared.Rent(newSize);
             byte[] oldBytes = _bytes;
 
             if (ActiveLength != 0)
@@ -129,17 +158,9 @@ namespace NetworkToolkit
             _activeStart = 0;
 
             _bytes = newBytes;
-            if (_usePool)
-            {
-                ArrayPool<byte>.Shared.Return(oldBytes);
-            }
+            ArrayPool<byte>.Shared.Return(oldBytes);
 
             Debug.Assert(byteCount <= AvailableLength);
-        }
-
-        public void Grow()
-        {
-            EnsureAvailableSpace(AvailableLength + 1);
         }
     }
 }

@@ -8,6 +8,18 @@ namespace NetworkToolkit
 {
     internal static class StreamExtensions
     {
+        public static ValueTask DisposeAsync(this Stream stream, CancellationToken cancellationToken)
+        {
+            if (stream is ICancellableAsyncDisposable disposable)
+            {
+                return disposable.DisposeAsync(cancellationToken);
+            }
+            else
+            {
+                return stream.DisposeAsync();
+            }
+        }
+
         public static ValueTask WriteAsync(this Stream stream, IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken)
         {
             if (stream is IGatheringStream gatheringStream)

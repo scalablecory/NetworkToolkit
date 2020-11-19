@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Net.Security;
 using System.Threading;
@@ -324,10 +325,18 @@ namespace NetworkToolkit.Http.Primitives
 
         private sealed class PooledHttp1Connection : Http1Connection
         {
+            private readonly Connection _connection;
             internal PooledHttp1Connection? _prev, _next;
 
-            public PooledHttp1Connection(Connection connection) : base(connection)
+            public PooledHttp1Connection(Connection connection) : base(connection.Stream)
             {
+                _connection = connection;
+            }
+
+            public override async ValueTask DisposeAsync(CancellationToken cancellationToken)
+            {
+                await _connection.DisposeAsync(cancellationToken).ConfigureAwait(false);
+                await base.DisposeAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 

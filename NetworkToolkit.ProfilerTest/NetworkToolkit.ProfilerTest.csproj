@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -12,7 +12,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\NetworkToolKit\ArrayBuffer.cs" />
     <Compile Include="..\NetworkToolKit.Benchmarks\SimpleHttp1Server.cs" />
   </ItemGroup>
 

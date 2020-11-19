@@ -13,6 +13,26 @@ namespace NetworkToolkit.Tests.Http
     {
         public virtual ConnectionFactory CreateConnectionFactory() => new MemoryConnectionFactory();
 
+        [Fact]
+        public async Task Receive_LWS_Success()
+        {
+            await RunSingleStreamTest(
+                async (clientRequest, serverUri) =>
+                {
+                    clientRequest.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
+                    clientRequest.WriteRequest(HttpMethod.Get, serverUri);
+                    await clientRequest.CompleteRequestAsync();
+
+                    TestHeadersSink responseHeaders = await clientRequest.ReadAllHeadersAsync();
+                    Assert.Equal("foo   bar   baz", responseHeaders.GetSingleValue("X-Test-Header"));
+                },
+                async serverStream =>
+                {
+                    HttpTestFullRequest request = await serverStream.ReceiveFullRequestAsync();
+                    await ((Http1TestStream)serverStream).SendRawResponseAsync("HTTP/1.1 200 OK\r\nX-Test-Header: foo\r\n\tbar\r\n baz\r\n\r\n");
+                });
+        }
+
         internal override async Task RunSingleStreamTest(Func<ValueHttpRequest, Uri, Task> clientFunc, Func<HttpTestStream, Task> serverFunc, int? millisecondsTimeout = null)
         {
             ConnectionFactory connectionFactory = CreateConnectionFactory();
@@ -49,7 +69,10 @@ namespace NetworkToolkit.Tests.Http
 
                     async Task RunClientAsync()
                     {
-                        HttpConnection connection = new Http1Connection(await connectionFactory.ConnectAsync(server.EndPoint!).ConfigureAwait(false));
+                        Connection con = await connectionFactory.ConnectAsync(server.EndPoint!).ConfigureAwait(false);
+                        HttpConnection connection = new Http1Connection(con.Stream);
+
+                        await using (con.ConfigureAwait(false))
                         await using (connection.ConfigureAwait(false))
                         {
                             ValueHttpRequest? optionalRequest = await connection.CreateNewRequestAsync(HttpPrimitiveVersion.Version11, HttpVersionPolicy.RequestVersionExact).ConfigureAwait(false);

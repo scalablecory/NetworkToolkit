@@ -21,6 +21,7 @@ namespace NetworkToolkit.Benchmarks
         private HttpMessageInvoker? _httpClient;
         private Uri? _uri;
 
+        private Connection? _connection;
         private HttpConnection? _primitiveConnection;
         private byte[]? _encodedScheme, _encodedAuthority, _encodedPathAndQuery;
 
@@ -98,7 +99,8 @@ namespace NetworkToolkit.Benchmarks
         {
             _connectionListener = _connectionFactory.ListenAsync().AsTask().Result;
             _server = new SimpleHttp1Server(_connectionListener, trigger: Encoding.ASCII.GetBytes("\r\n\r\n"), response: ResponseBytes!.Response);
-            _primitiveConnection = new Http1Connection(_connectionFactory.ConnectAsync(_connectionListener.EndPoint!).AsTask().Result);
+            _connection = _connectionFactory.ConnectAsync(_connectionListener.EndPoint!).AsTask().Result;
+            _primitiveConnection = new Http1Connection(_connection.Stream);
             _httpClient = new HttpMessageInvoker(new SocketsHttpHandler
             {
                 AllowAutoRedirect = false,
@@ -118,6 +120,7 @@ namespace NetworkToolkit.Benchmarks
         {
             _httpClient!.Dispose();
             _primitiveConnection!.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _connection!.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _server!.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _connectionListener!.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
