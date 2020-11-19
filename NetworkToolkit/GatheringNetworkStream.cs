@@ -12,12 +12,13 @@ using System.Threading.Tasks;
 
 namespace NetworkToolkit
 {
-    internal sealed class GatheringNetworkStream : NetworkStream, IGatheringStream
+    /// <summary>
+    /// A <see cref="NetworkStream"/> that supports gathered writes via <see cref="IGatheringStream"/>.
+    /// </summary>
+    public class GatheringNetworkStream : NetworkStream, IGatheringStream
     {
         private EventArgs? _gatheredEventArgs;
         private static Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>? s_sendAsyncWithCancellation;
-
-        public static bool IsSupported => s_sendAsyncWithCancellation != null;
 
         static GatheringNetworkStream()
         {
@@ -31,13 +32,29 @@ namespace NetworkToolkit
             }
         }
 
-        public GatheringNetworkStream(Socket socket) : base(socket, ownsSocket: true)
+        /// <summary>
+        /// Instantiates a new <see cref="GatheringNetworkStream"/> over a <see cref="Socket"/>.
+        /// </summary>
+        /// <param name="socket">The <see cref="Socket"/> this stream will operate over.</param>
+        /// <param name="ownsSocket">If true, the <paramref name="socket"/> will be disposed of along with this stream.</param>
+        public GatheringNetworkStream(Socket socket, bool ownsSocket) : base(socket, ownsSocket)
         {
-            Debug.Assert(IsSupported);
         }
 
+        /// <summary>
+        /// Instantiates a new <see cref="GatheringNetworkStream"/> over a <see cref="Socket"/>.
+        /// </summary>
+        /// <param name="socket">The <see cref="Socket"/> this stream will operate over.</param>
+        /// <param name="access">The access permissions given to this stream.</param>
+        /// <param name="ownsSocket">If true, the <paramref name="socket"/> will be disposed of along with this stream.</param>
+        public GatheringNetworkStream(Socket socket, FileAccess access, bool ownsSocket) : base(socket, access, ownsSocket)
+        {
+        }
+
+        /// <inheritdoc/>
         protected override void Dispose(bool disposing)
         {
+            // dispose the NetworkStream first, in case the event args are currently in use.
             base.Dispose(disposing);
 
             if (disposing)
@@ -46,21 +63,30 @@ namespace NetworkToolkit
             }
         }
 
-        public ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        public virtual ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
         {
             if (buffers.Count == 1)
             {
                 return WriteAsync(buffers[0], cancellationToken);
             }
 
-            if (cancellationToken.IsCancellationRequested)
+            if (s_sendAsyncWithCancellation == null)
             {
-                // There is no SocketAsyncEventArgs call that is cancellable...
-                return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new OperationCanceledException(cancellationToken)));
+                // This shouldn't be hit on .NET 5; it's possible future versions will remove or change the internal method we depend on.
+                return WriteAsyncEmulated(buffers, cancellationToken);
             }
 
             _gatheredEventArgs ??= new EventArgs();
             return _gatheredEventArgs.WriteAsync(Socket, buffers, cancellationToken);
+        }
+
+        private async ValueTask WriteAsyncEmulated(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken)
+        {
+            for (int i = 0, count = buffers.Count; i != count; ++i)
+            {
+                await WriteAsync(buffers[i], cancellationToken).ConfigureAwait(false);
+            }
         }
 
         private sealed class EventArgs : SocketTaskEventArgs<int>

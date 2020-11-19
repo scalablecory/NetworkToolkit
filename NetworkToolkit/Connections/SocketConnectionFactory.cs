@@ -5,23 +5,22 @@ using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Sources;
 
 namespace NetworkToolkit.Connections
 {
     /// <summary>
     /// A connection factory using sockets.
     /// </summary>
-    public sealed class SocketConnectionFactory : ConnectionFactory
+    public class SocketConnectionFactory : ConnectionFactory
     {
         /// <summary>
         /// A property key to retrieve the underlying <see cref="Socket"/> of the connection.
         /// </summary>
         public static ConnectionPropertyKey<Socket> SocketPropertyKey => new ();
 
-        private AddressFamily _addressFamily;
-        private SocketType _socketType;
-        private ProtocolType _protocolType;
+        private readonly AddressFamily _addressFamily;
+        private readonly SocketType _socketType;
+        private readonly ProtocolType _protocolType;
 
         /// <summary>
         /// Instantiates a new <see cref="SocketConnectionFactory"/>.
@@ -30,6 +29,7 @@ namespace NetworkToolkit.Connections
         /// <param name="protocolType">The <see cref="ProtocolType"/> to use when creating sockets.</param>
         /// <remarks>
         /// If TCP values are specified and the OS supports it, sockets opened by this <see cref="SocketConnectionFactory"/> will be dual-mode IPv6.
+        /// Socket options can be customized by overriding the <see cref="CreateSocket(AddressFamily, SocketType, ProtocolType)"/> method.
         /// </remarks>
         public SocketConnectionFactory(SocketType socketType = SocketType.Stream, ProtocolType protocolType = ProtocolType.Tcp)
             : this(AddressFamily.Unspecified, socketType, protocolType)
@@ -58,34 +58,58 @@ namespace NetworkToolkit.Connections
             return default;
         }
 
-        private Socket CreateSocket()
+        /// <summary>
+        /// Creates a <see cref="Socket"/> used by the connection factory.
+        /// </summary>
+        /// <param name="addressFamily">The <see cref="AddressFamily"/> of the <see cref="Socket"/> to create.</param>
+        /// <param name="socketType">The <see cref="SocketType"/> of the <see cref="Socket"/> to create.</param>
+        /// <param name="protocolType">The <see cref="ProtocolType"/> of the <see cref="Socket"/> to create.</param>
+        /// <returns>A new <see cref="Socket"/>.</returns>
+        protected virtual Socket CreateSocket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType)
         {
-            var sock = new Socket(_addressFamily, _socketType, _protocolType);
+            var sock = new Socket(addressFamily, socketType, protocolType);
 
-            if (_addressFamily == AddressFamily.InterNetworkV6)
+            try
             {
-                sock.DualMode = true;
-            }
+                if (addressFamily == AddressFamily.InterNetworkV6)
+                {
+                    sock.DualMode = true;
+                }
 
-            if (_protocolType == ProtocolType.Tcp)
+                if (protocolType == ProtocolType.Tcp)
+                {
+                    sock.NoDelay = true;
+                }
+
+                return sock;
+            }
+            catch
             {
-                sock.NoDelay = true;
+                sock.Dispose();
+                throw;
             }
-
-            return sock;
         }
+
+        /// <summary>
+        /// Creates a <see cref="NetworkStream"/> over a <see cref="Socket"/>.
+        /// </summary>
+        /// <param name="socket">The <see cref="Socket"/> to create a <see cref="NetworkStream"/> over.</param>
+        /// <returns>A new <see cref="NetworkStream"/>. This stream must take ownership over <paramref name="socket"/>.</returns>
+        /// <remarks>The default implementation returns a <see cref="GatheringNetworkStream"/>, offering better performance for supporting usage.</remarks>
+        protected virtual NetworkStream CreateStream(Socket socket) =>
+            new GatheringNetworkStream(socket, true);
 
         /// <inheritdoc/>
         public override async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionProperties? options = null, CancellationToken cancellationToken = default)
         {
             if (endPoint == null) throw new ArgumentNullException(nameof(endPoint));
 
-            Socket sock = CreateSocket();
+            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
 
             try
             {
                 await sock.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);
-                return new SocketConnection(sock);
+                return new SocketConnection(CreateStream(sock));
             }
             catch
             {
@@ -119,13 +143,13 @@ namespace NetworkToolkit.Connections
                 endPoint = new IPEndPoint(address, 0);
             }
 
-            Socket sock = CreateSocket();
+            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
 
             try
             {
                 sock.Bind(endPoint!); // relying on Bind() checking args.
                 sock.Listen();
-                return new ValueTask<ConnectionListener>(new SocketListener(sock));
+                return new ValueTask<ConnectionListener>(new SocketListener(this, sock));
             }
             catch(Exception ex)
             {
@@ -136,13 +160,15 @@ namespace NetworkToolkit.Connections
 
         private sealed class SocketListener : ConnectionListener
         {
+            private readonly SocketConnectionFactory _connectionFactory;
             private readonly Socket _listener;
             private readonly EventArgs _args = new EventArgs();
 
             public override EndPoint? EndPoint => _listener.LocalEndPoint;
 
-            public SocketListener(Socket listener)
+            public SocketListener(SocketConnectionFactory connectionFactory, Socket listener)
             {
+                _connectionFactory = connectionFactory;
                 _listener = listener;
             }
 
@@ -185,7 +211,15 @@ namespace NetworkToolkit.Connections
                     {
                         Socket socket = _args.AcceptSocket;
                         _args.AcceptSocket = null;
-                        return new SocketConnection(socket);
+
+                        try
+                        {
+                            return new SocketConnection(_connectionFactory.CreateStream(socket));
+                        }
+                        catch
+                        {
+                            socket.Dispose();
+                        }
                     }
 
                     if (_args.SocketError == SocketError.OperationAborted)
@@ -219,14 +253,9 @@ namespace NetworkToolkit.Connections
 
             private Socket Socket => ((NetworkStream)Stream).Socket;
 
-            public SocketConnection(Socket socket) : base(CreateStream(socket))
+            public SocketConnection(NetworkStream stream) : base(stream)
             {
             }
-
-            private static NetworkStream CreateStream(Socket socket) =>
-                GatheringNetworkStream.IsSupported
-                    ? new GatheringNetworkStream(socket)
-                    : new NetworkStream(socket);
 
             protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
                 => default;
@@ -248,20 +277,10 @@ namespace NetworkToolkit.Connections
                 return false;
             }
 
-            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+            public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
             {
-                if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled(cancellationToken);
-
-                try
-                {
-                    ((NetworkStream)Stream).Socket.Shutdown(SocketShutdown.Send);
-                }
-                catch (Exception ex)
-                {
-                    return ValueTask.FromException(ex);
-                }
-
-                return default;
+                await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                ((NetworkStream)Stream).Socket.Shutdown(SocketShutdown.Send);
             }
         }
 
