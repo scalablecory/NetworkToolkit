@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -13,9 +15,25 @@ namespace NetworkToolkit
     internal sealed class GatheringNetworkStream : NetworkStream, IGatheringStream
     {
         private EventArgs? _gatheredEventArgs;
+        private static Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>? s_sendAsyncWithCancellation;
+
+        public static bool IsSupported => s_sendAsyncWithCancellation != null;
+
+        static GatheringNetworkStream()
+        {
+            MethodInfo? sendAsync = typeof(Socket).GetMethod("SendAsync", BindingFlags.NonPublic | BindingFlags.Instance, binder: null, new[] { typeof(SocketAsyncEventArgs), typeof(CancellationToken) }, modifiers: null);
+
+            if (sendAsync != null)
+            {
+                s_sendAsyncWithCancellation =
+                    (Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>)
+                    Delegate.CreateDelegate(typeof(Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>), firstArgument: null, sendAsync);
+            }
+        }
 
         public GatheringNetworkStream(Socket socket) : base(socket, ownsSocket: true)
         {
+            Debug.Assert(IsSupported);
         }
 
         protected override void Dispose(bool disposing)
@@ -35,6 +53,12 @@ namespace NetworkToolkit
                 return WriteAsync(buffers[0], cancellationToken);
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // There is no SocketAsyncEventArgs call that is cancellable...
+                return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new OperationCanceledException(cancellationToken)));
+            }
+
             _gatheredEventArgs ??= new EventArgs();
             return _gatheredEventArgs.WriteAsync(Socket, buffers, cancellationToken);
         }
@@ -44,7 +68,7 @@ namespace NetworkToolkit
             private List<ArraySegment<byte>>? _gatheredSegments;
             private List<byte[]>? _pooledArrays;
 
-            public ValueTask WriteAsync(Socket socket, IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
+            public ValueTask WriteAsync(Socket socket, IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken)
             {
                 int bufferCount = buffers.Count;
 
@@ -71,7 +95,7 @@ namespace NetworkToolkit
 
                 BufferList = _gatheredSegments;
                 Reset();
-                if (!socket.SendAsync(this))
+                if (!s_sendAsyncWithCancellation!(socket, this, cancellationToken))
                 {
                     OnCompleted();
                 }
@@ -104,7 +128,8 @@ namespace NetworkToolkit
                 }
                 else
                 {
-                    SetException(ExceptionDispatchInfo.SetCurrentStackTrace(new IOException($"{nameof(WriteAsync)} failed. See InnerException for more details.", new SocketException((int)SocketError))));
+                    var ex = new SocketException((int)SocketError);
+                    SetException(ExceptionDispatchInfo.SetCurrentStackTrace(new IOException(ex.Message, ex)));
                 }
             }
         }

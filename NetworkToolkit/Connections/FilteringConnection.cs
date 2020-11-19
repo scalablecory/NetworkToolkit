@@ -36,11 +36,17 @@ namespace NetworkToolkit.Connections
         }
 
         /// <inheritdoc/>
-        protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken) =>
-            BaseConnection.DisposeAsync(cancellationToken);
+        protected override async ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
+        {
+            await Stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
+            await BaseConnection.DisposeAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         /// <inheritdoc/>
-        public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken) =>
-            BaseConnection.CompleteWritesAsync(cancellationToken);
+        public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
+        {
+            await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await BaseConnection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 }

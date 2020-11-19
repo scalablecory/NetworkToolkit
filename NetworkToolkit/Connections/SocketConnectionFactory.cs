@@ -219,9 +219,14 @@ namespace NetworkToolkit.Connections
 
             private Socket Socket => ((NetworkStream)Stream).Socket;
 
-            public SocketConnection(Socket socket) : base(new GatheringNetworkStream(socket))
+            public SocketConnection(Socket socket) : base(CreateStream(socket))
             {
             }
+
+            private static NetworkStream CreateStream(Socket socket) =>
+                GatheringNetworkStream.IsSupported
+                    ? new GatheringNetworkStream(socket)
+                    : new NetworkStream(socket);
 
             protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
                 => default;

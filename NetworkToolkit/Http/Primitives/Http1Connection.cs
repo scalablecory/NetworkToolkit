@@ -42,6 +42,7 @@ namespace NetworkToolkit.Http.Primitives
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToEndOfStream = (c, r, t) => { r.SetCurrentReadType(HttpReadType.EndOfStream); return new ValueTask<HttpReadType>(HttpReadType.EndOfStream); };
 
         internal readonly Stream _stream;
+        internal readonly IGatheringStream _gatheringStream;
         internal VectorArrayBuffer _readBuffer;
         internal ArrayBuffer _writeBuffer;
         private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new List<ReadOnlyMemory<byte>>(3);
@@ -69,7 +70,17 @@ namespace NetworkToolkit.Http.Primitives
         /// <param name="stream">The <see cref="Stream"/> to read and write to.</param>
         public Http1Connection(Stream stream)
         {
-            _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
+
+            if (stream is not IGatheringStream gatheringStream)
+            {
+                var bufferingStream = new WriteBufferingStream(stream);
+                stream = bufferingStream;
+                gatheringStream = bufferingStream;
+            }
+
+            _stream = stream;
+            _gatheringStream = gatheringStream;
             _readBuffer = new VectorArrayBuffer(initialSize: 4096);
             _writeBuffer = new ArrayBuffer(initialSize: 64);
         }
@@ -495,7 +506,7 @@ namespace NetworkToolkit.Http.Primitives
                     if (!_requestIsChunked)
                     {
                         if (buffers == null) return _stream.WriteAsync(buffer, cancellationToken);
-                        else return _stream.WriteAsync(buffers, cancellationToken);
+                        else return _gatheringStream.WriteAsync(buffers, cancellationToken);
                     }
                     else return WriteChunkedContentAsync(buffer, buffers, cancellationToken);
                 default:
@@ -543,7 +554,7 @@ namespace NetworkToolkit.Http.Primitives
             // This is done to elide an async state machine allocation that would otherwise be needed to await the write and then discard.
             _writeBuffer.Discard(_writeBuffer.ActiveLength);
 
-            return _stream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
+            return _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
         }
 
         private void WriteChunkEnvelopeStart(ulong chunkLength)
@@ -586,7 +597,7 @@ namespace NetworkToolkit.Http.Primitives
                 // This is done to elide an async state machine allocation that would otherwise be needed to await the write and then discard.
                 _writeBuffer.Discard(_writeBuffer.ActiveLength);
 
-                return _stream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
+                return _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
             }
             else
             {

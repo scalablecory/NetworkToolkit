@@ -118,12 +118,6 @@ namespace NetworkToolkit.Connections
             {
             }
 
-            protected override async ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
-            {
-                await Stream.DisposeAsync().ConfigureAwait(false);
-                await base.DisposeAsyncCore(cancellationToken).ConfigureAwait(false);
-            }
-
             public override bool TryGetProperty(Type type, out object? value)
             {
                 if (type == typeof(SslStream))

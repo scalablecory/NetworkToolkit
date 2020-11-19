@@ -61,9 +61,7 @@ namespace NetworkToolkit.Connections
 
             _stream = null;
 
-            await (stream is ICancellableAsyncDisposable cancellable ?
-                cancellable.DisposeAsync(cancellationToken) :
-                stream.DisposeAsync()).ConfigureAwait(false);
+            await stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

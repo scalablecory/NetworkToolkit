@@ -56,7 +56,7 @@ namespace NetworkToolkit.Connections
 
         private sealed class MemoryConnectionStream : Stream, IGatheringStream
         {
-            PipeReader _reader;
+            PipeReader? _reader;
             PipeWriter? _writer;
 
             public override bool CanRead => true;
@@ -77,12 +77,12 @@ namespace NetworkToolkit.Connections
 
             protected override void Dispose(bool disposing)
             {
-                if (disposing && _writer != null)
+                if (disposing && _reader is PipeReader reader)
                 {
-                    _writer.Complete();
-                    _reader.Complete();
-                    _writer = null!;
-                    _reader = null!;
+                    _writer?.Complete();
+                    reader.Complete();
+                    _writer = null;
+                    _reader = null;
                 }
             }
 
@@ -106,13 +106,13 @@ namespace NetworkToolkit.Connections
 
             public override int Read(Span<byte> buffer)
             {
-                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_reader is not PipeReader reader) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
 
                 try
                 {
-                    return FinishRead(buffer, Tools.BlockForResult(_reader.ReadAsync()));
+                    return FinishRead(reader, buffer, Tools.BlockForResult(_reader.ReadAsync()), CancellationToken.None);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new IOException(ex.Message, ex);
                 }
@@ -129,24 +129,25 @@ namespace NetworkToolkit.Connections
 
             public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
             {
-                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_reader is not PipeReader reader) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
 
                 try
                 {
-                    ReadResult result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-                    return FinishRead(buffer.Span, result);
+                    ReadResult result = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    return FinishRead(reader, buffer.Span, result, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when(ex is not OperationCanceledException)
                 {
                     throw new IOException(ex.Message, ex);
                 }
             }
 
-            private int FinishRead(Span<byte> buffer, in ReadResult result)
+            private static int FinishRead(PipeReader reader, Span<byte> buffer, in ReadResult result, CancellationToken cancellationToken)
             {
                 if (result.IsCanceled)
                 {
-                    throw new SocketException((int)SocketError.OperationAborted);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    throw new OperationCanceledException();
                 }
 
                 ReadOnlySequence<byte> sequence = result.Buffer;
@@ -171,7 +172,7 @@ namespace NetworkToolkit.Connections
                 }
                 finally
                 {
-                    _reader.AdvanceTo(consumed);
+                    reader.AdvanceTo(consumed);
                 }
             }
 
@@ -180,7 +181,8 @@ namespace NetworkToolkit.Connections
 
             public override void Write(ReadOnlySpan<byte> buffer)
             {
-                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_writer == null) throw new InvalidOperationException($"{nameof(MemoryConnectionStream)} cannot be written to after writes have been completed.");
 
                 try
                 {
@@ -191,10 +193,10 @@ namespace NetworkToolkit.Connections
 
                     if (res.IsCanceled)
                     {
-                        throw new SocketException((int)SocketError.OperationAborted);
+                        throw new OperationCanceledException();
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new IOException(ex.Message, ex);
                 }
@@ -205,18 +207,20 @@ namespace NetworkToolkit.Connections
 
             public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
             {
-                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_reader is null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_writer is not PipeWriter writer) throw new InvalidOperationException($"{nameof(MemoryConnectionStream)} cannot be written to after writes have been completed.");
 
                 try
                 {
-                    FlushResult res = await _writer.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    FlushResult res = await writer.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
 
                     if (res.IsCanceled)
                     {
-                        throw new SocketException((int)SocketError.OperationAborted);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        throw new OperationCanceledException();
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new IOException(ex.Message, ex);
                 }
@@ -224,28 +228,36 @@ namespace NetworkToolkit.Connections
 
             public async ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
             {
-                if (_writer == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                if (_writer is not PipeWriter writer) throw new InvalidOperationException($"{nameof(MemoryConnectionStream)} cannot be written to after writes have been completed.");
 
                 try
                 {
                     foreach (ReadOnlyMemory<byte> buffer in buffers)
                     {
-                        buffer.Span.CopyTo(_writer.GetSpan(buffer.Length));
-                        _writer.Advance(buffer.Length);
+                        buffer.Span.CopyTo(writer.GetSpan(buffer.Length));
+                        writer.Advance(buffer.Length);
                     }
 
-                    FlushResult res = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    FlushResult res = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
                     if (res.IsCanceled)
                     {
-                        throw new SocketException((int)SocketError.OperationAborted);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        throw new OperationCanceledException();
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new IOException(ex.Message, ex);
                 }
             }
+
+            public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
+                TaskToApm.Begin(WriteAsync(buffer, offset, count), callback, state);
+
+            public override void EndWrite(IAsyncResult asyncResult) =>
+                TaskToApm.End(asyncResult);
 
             public override void Flush()
             {
@@ -264,6 +276,22 @@ namespace NetworkToolkit.Connections
             public override void SetLength(long value)
             {
                 throw new NotImplementedException();
+            }
+
+            public override void CopyTo(Stream destination, int bufferSize) =>
+                CopyToAsync(destination, bufferSize, CancellationToken.None).GetAwaiter().GetResult();
+
+            public override async Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+            {
+                if (_reader is not PipeReader reader) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
+                try
+                {
+                    await reader.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new IOException(ex.Message, ex);
+                }
             }
         }
     }
