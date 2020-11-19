@@ -12,7 +12,7 @@ namespace NetworkToolkit
     /// <summary>
     /// Applies <c>TCP_CORK</c> to <see cref="Socket"/>.
     /// The application must be running on Linux to support this.
-    /// Writes to this <see cref="Stream"/> will not immediately be sent, instead waiting for one of:
+    /// Writes to this <see cref="Stream"/> will not immediately be sent to wire, instead waiting for one of:
     /// <list type="bullet">
     /// <item><description><see cref="Flush"/> or <see cref="FlushAsync(CancellationToken)"/> to be called.</description></item>
     /// <item><description>A full packet worth of data to be written.</description></item>
@@ -26,7 +26,7 @@ namespace NetworkToolkit
         const int TCP_CORK = 3; // from linux/tcp.h
 
         /// <summary>
-        /// If true, <see cref="CorkingNetworkStream"/> is supported on your platform.
+        /// If true, <see cref="CorkingNetworkStream"/> is supported on the running platform.
         /// </summary>
         /// <remarks>
         /// <see cref="CorkingNetworkStream"/> requires the <c>TCP_CORK</c> option on Linux.

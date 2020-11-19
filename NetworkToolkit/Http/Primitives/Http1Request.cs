@@ -13,6 +13,9 @@ namespace NetworkToolkit.Http.Primitives
 
         public Http1Connection Connection => _connection;
 
+        protected internal override EndPoint? LocalEndPoint => _connection._connection.LocalEndPoint;
+        protected internal override EndPoint? RemoteEndPoint => _connection._connection.RemoteEndPoint;
+
         public Http1Request(Http1Connection connection, HttpPrimitiveVersion version)
         {
             _connection = connection;

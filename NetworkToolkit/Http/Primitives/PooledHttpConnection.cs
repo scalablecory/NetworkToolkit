@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Security;
 using System.Threading;
@@ -325,18 +326,10 @@ namespace NetworkToolkit.Http.Primitives
 
         private sealed class PooledHttp1Connection : Http1Connection
         {
-            private readonly Connection _connection;
             internal PooledHttp1Connection? _prev, _next;
 
-            public PooledHttp1Connection(Connection connection) : base(connection.Stream)
+            public PooledHttp1Connection(Connection connection) : base(connection)
             {
-                _connection = connection;
-            }
-
-            public override async ValueTask DisposeAsync(CancellationToken cancellationToken)
-            {
-                await _connection.DisposeAsync(cancellationToken).ConfigureAwait(false);
-                await base.DisposeAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -346,6 +339,9 @@ namespace NetworkToolkit.Http.Primitives
             private PooledHttpConnection? _owningConnection;
             internal PooledHttpRequest? _prev, _next;
             internal long _lastUsedTicks;
+
+            protected internal override EndPoint? LocalEndPoint => _request.LocalEndPoint;
+            protected internal override EndPoint? RemoteEndPoint => _request.RemoteEndPoint;
 
             public PooledHttpRequest(ValueHttpRequest request, PooledHttpConnection owningConnection)
             {

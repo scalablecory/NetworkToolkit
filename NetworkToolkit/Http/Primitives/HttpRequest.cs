@@ -38,6 +38,16 @@ namespace NetworkToolkit.Http.Primitives
         private int _version;
 
         /// <summary>
+        /// The local <see cref="EndPoint"/> the <see cref="HttpRequest"/> is being made from.
+        /// </summary>
+        protected internal virtual EndPoint? LocalEndPoint { get; }
+
+        /// <summary>
+        /// The remote <see cref="EndPoint"/> the <see cref="HttpRequest"/> is connected to.
+        /// </summary>
+        protected internal virtual EndPoint? RemoteEndPoint { get; }
+
+        /// <summary>
         /// The current <see cref="HttpReadType"/> for the request.
         /// </summary>
         protected internal HttpReadType ReadType { get; protected set; }

@@ -20,6 +20,18 @@ namespace NetworkToolkit.Http.Primitives
         internal HttpRequest Request => _request;
 
         /// <summary>
+        /// The local <see cref="EndPoint"/> the <see cref="HttpRequest"/> is being made from.
+        /// </summary>
+        public EndPoint? LocalEndPoint =>
+            _request.LocalEndPoint;
+
+        /// <summary>
+        /// The remote <see cref="EndPoint"/> the <see cref="HttpRequest"/> is connected to.
+        /// </summary>
+        public EndPoint? RemoteEndPoint =>
+            _request.RemoteEndPoint;
+
+        /// <summary>
         /// The current <see cref="HttpReadType"/> for the request.
         /// </summary>
         public HttpReadType ReadType =>

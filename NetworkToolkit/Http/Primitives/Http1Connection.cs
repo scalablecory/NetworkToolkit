@@ -1,4 +1,5 @@
-﻿using System;
+﻿using NetworkToolkit.Connections;
+using System;
 using System.Buffers;
 using System.Buffers.Text;
 using System.Collections.Generic;
@@ -41,6 +42,7 @@ namespace NetworkToolkit.Http.Primitives
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipTrailingHeaders = (c, r, t) => c.SkipHeadersAsync(r, t);
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToEndOfStream = (c, r, t) => { r.SetCurrentReadType(HttpReadType.EndOfStream); return new ValueTask<HttpReadType>(HttpReadType.EndOfStream); };
 
+        internal readonly Connection _connection;
         internal readonly Stream _stream;
         internal readonly IGatheringStream _gatheringStream;
         internal VectorArrayBuffer _readBuffer;
@@ -67,10 +69,12 @@ namespace NetworkToolkit.Http.Primitives
         /// <summary>
         /// Instantiates a new <see cref="Http1Connection"/> over a given <see cref="Stream"/>.
         /// </summary>
-        /// <param name="stream">The <see cref="Stream"/> to read and write to.</param>
-        public Http1Connection(Stream stream)
+        /// <param name="connection">The <see cref="Connection"/> to read and write to.</param>
+        public Http1Connection(Connection connection)
         {
-            if (stream == null) throw new ArgumentNullException(nameof(stream));
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+
+            Stream stream = connection.Stream;
 
             if (stream is not IGatheringStream gatheringStream)
             {
@@ -79,6 +83,7 @@ namespace NetworkToolkit.Http.Primitives
                 gatheringStream = bufferingStream;
             }
 
+            _connection = connection;
             _stream = stream;
             _gatheringStream = gatheringStream;
             _readBuffer = new VectorArrayBuffer(initialSize: 4096);

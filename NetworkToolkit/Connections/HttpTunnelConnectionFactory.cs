@@ -2,7 +2,6 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -57,7 +56,6 @@ namespace NetworkToolkit.Connections
 
             try
             {
-
                 request.ConfigureRequest(contentLength: null, hasTrailingHeaders: false);
                 request.WriteConnectRequest(authorityBytes);
                 await request.FlushHeadersAsync(cancellationToken).ConfigureAwait(false);
@@ -70,8 +68,9 @@ namespace NetworkToolkit.Connections
                     throw new Exception($"Connect to HTTP tunnel failed; received status code {request.StatusCode}.");
                 }
 
-                Stream stream = new HttpContentStream(request, ownsRequest: true);
-                return new HttpTunnelConnection(endPoint, stream);
+                var localEndPoint = new TunnelEndPoint(request.LocalEndPoint, request.RemoteEndPoint);
+                var stream = new HttpContentStream(request, ownsRequest: true);
+                return new HttpTunnelConnection(localEndPoint, endPoint, stream);
             }
             catch
             {
@@ -89,24 +88,28 @@ namespace NetworkToolkit.Connections
         /// <inheritdoc/>
         protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
         {
-            return _ownsConnection ? _httpConnection.DisposeAsync(cancellationToken) : default;
+            if (_ownsConnection)
+            {
+                return _httpConnection.DisposeAsync(cancellationToken);
+            }
+
+            return default;
         }
 
         private sealed class HttpTunnelConnection : Connection
         {
-            public HttpTunnelConnection(EndPoint endPoint, Stream stream) : base(stream)
+            public HttpTunnelConnection(EndPoint localEndPoint, EndPoint remoteEndPoint, HttpContentStream stream) : base(stream)
             {
-                RemoteEndPoint = endPoint;
+                LocalEndPoint = localEndPoint;
+                RemoteEndPoint = remoteEndPoint;
             }
 
-            public override EndPoint? LocalEndPoint => null;
+            public override EndPoint? LocalEndPoint { get; }
 
             public override EndPoint? RemoteEndPoint { get; }
 
-            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
-            {
-                return default;
-            }
+            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken) =>
+                ((HttpContentStream)Stream).Request.CompleteRequestAsync(cancellationToken);
 
             protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
             {

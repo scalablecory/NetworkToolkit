@@ -11,13 +11,15 @@ namespace NetworkToolkit.Http.Primitives
     /// </summary>
     public class HttpContentStream : Stream, ICancellableAsyncDisposable, IGatheringStream
     {
-        /// <summary>
-        /// The <see cref="ValueHttpRequest"/> being operated on.
-        /// </summary>
-        protected ValueHttpRequest _request;
+        internal ValueHttpRequest _request;
 
         private readonly bool _ownsRequest;
         private StreamState _readState;
+
+        /// <summary>
+        /// The <see cref="ValueHttpRequest"/> being operated on.
+        /// </summary>
+        public ValueHttpRequest Request => _request;
 
         /// <inheritdoc/>
         public override bool CanRead => _readState < StreamState.EndOfStream;
@@ -93,7 +95,7 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw new IOException($"Unable to flush {nameof(HttpRequest)}. See InnerException for details.", ex);
+                throw new IOException(ex.Message, ex);
             }
         }
 
@@ -111,7 +113,7 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw new IOException($"Unable to flush {nameof(HttpRequest)}. See InnerException for details.", ex);
+                throw new IOException(ex.Message, ex);
             }
         }
 
@@ -151,7 +153,7 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw new IOException($"Unable to read from {nameof(HttpRequest)}. See InnerException for details.", ex);
+                throw new IOException(ex.Message, ex);
             }
         }
 
@@ -185,7 +187,7 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw new IOException($"Unable to write to {nameof(HttpRequest)}. See InnerException for details.", ex);
+                throw new IOException(ex.Message, ex);
             }
         }
 
@@ -203,7 +205,7 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw new IOException($"Unable to write to {nameof(HttpRequest)}. See InnerException for details.", ex);
+                throw new IOException(ex.Message, ex);
             }
         }
 
