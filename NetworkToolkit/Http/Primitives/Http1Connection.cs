@@ -3,6 +3,7 @@ using System;
 using System.Buffers;
 using System.Buffers.Text;
 using System.Collections.Generic;
+using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -32,6 +33,9 @@ namespace NetworkToolkit.Http.Primitives
         private static ReadOnlySpan<byte> s_EncodedTransferEncodingName => new byte[] { (byte)'t', (byte)'r', (byte)'a', (byte)'n', (byte)'s', (byte)'f', (byte)'e', (byte)'r', (byte)'-', (byte)'e', (byte)'n', (byte)'c', (byte)'o', (byte)'d', (byte)'i', (byte)'n', (byte)'g' };
         private static ReadOnlySpan<byte> s_EncodedTransferEncodingChunkedValue => new byte[] { (byte)'c', (byte)'h', (byte)'u', (byte)'n', (byte)'k', (byte)'e', (byte)'d' };
         private static ReadOnlySpan<byte> s_EncodedContentLengthName => new byte[] { (byte)'c', (byte)'o', (byte)'n', (byte)'t', (byte)'e', (byte)'n', (byte)'t', (byte)'-', (byte)'l', (byte)'e', (byte)'n', (byte)'g', (byte)'t', (byte)'h' };
+        private static ReadOnlySpan<byte> s_EncodedConnectionName => new byte[] { (byte)'c', (byte)'o', (byte)'n', (byte)'n', (byte)'e', (byte)'c', (byte)'t', (byte)'i', (byte)'o', (byte)'n' };
+        private static ReadOnlySpan<byte> s_EncodedConnectionCloseValue => new byte[] { (byte)'c', (byte)'l', (byte)'o', (byte)'s', (byte)'e' };
+        private static ReadOnlySpan<byte> s_EncodedConnectionKeepAliveValue => new byte[] { (byte)'k', (byte)'e', (byte)'e', (byte)'p', (byte)'-', (byte)'a', (byte)'l', (byte)'i', (byte)'v', (byte)'e' };
 
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadResponse = (c, r, t) => c.ReadResponseAsync(r, t);
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToHeaders = (c, r, t) => { c._readFunc = s_SkipHeaders; r.SetCurrentReadType(HttpReadType.Headers); return new ValueTask<HttpReadType>(HttpReadType.Headers); };
@@ -42,16 +46,18 @@ namespace NetworkToolkit.Http.Primitives
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipTrailingHeaders = (c, r, t) => c.SkipHeadersAsync(r, t);
         private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToEndOfStream = (c, r, t) => { r.SetCurrentReadType(HttpReadType.EndOfStream); return new ValueTask<HttpReadType>(HttpReadType.EndOfStream); };
 
+        internal readonly HttpPrimitiveVersion _version;
         internal readonly Connection _connection;
         internal readonly Stream _stream;
         internal readonly IGatheringStream _gatheringStream;
         internal VectorArrayBuffer _readBuffer;
         internal ArrayBuffer _writeBuffer;
         private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new List<ReadOnlyMemory<byte>>(3);
-        private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk;
+        private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk, _closeConnection;
         private WriteState _writeState;
         private ulong _responseContentBytesRemaining, _responseChunkBytesRemaining;
         private Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>>? _readFunc;
+        private HttpConnectionStatus _connectionState;
 
         internal Http1Request? _request;
 
@@ -66,13 +72,29 @@ namespace NetworkToolkit.Http.Primitives
             Finished
         }
 
+        /// <inheritdoc/>
+        public override HttpConnectionStatus Status => _connectionState;
+
         /// <summary>
         /// Instantiates a new <see cref="Http1Connection"/> over a given <see cref="Stream"/>.
         /// </summary>
         /// <param name="connection">The <see cref="Connection"/> to read and write to.</param>
-        public Http1Connection(Connection connection)
+        /// <param name="version">
+        /// The HTTP version to make requests as.
+        /// This must be one of <see cref="HttpPrimitiveVersion.Version10"/> or <see cref="HttpPrimitiveVersion.Version11"/>.</param>
+        public Http1Connection(Connection connection, HttpPrimitiveVersion version)
         {
             if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (version == null) throw new ArgumentNullException(nameof(version));
+
+            if (version == HttpPrimitiveVersion.Version10)
+            {
+                _closeConnection = true;
+            }
+            else if (version != HttpPrimitiveVersion.Version11)
+            {
+                throw new Exception($"{nameof(Http1Connection)} may only be used for HTTP/1.0 and HTTP/1.1.");
+            }
 
             Stream stream = connection.Stream;
 
@@ -83,6 +105,7 @@ namespace NetworkToolkit.Http.Primitives
                 gatheringStream = bufferingStream;
             }
 
+            _version = version;
             _connection = connection;
             _stream = stream;
             _gatheringStream = gatheringStream;
@@ -96,6 +119,7 @@ namespace NetworkToolkit.Http.Primitives
             await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
             _readBuffer.Dispose();
             _writeBuffer.Dispose();
+            _connectionState = HttpConnectionStatus.Closed;
         }
 
         /// <inheritdoc/>
@@ -108,11 +132,17 @@ namespace NetworkToolkit.Http.Primitives
 
             if (version.Major != 1)
             {
-                if (versionPolicy == HttpVersionPolicy.RequestVersionOrLower)
+                if (versionPolicy != HttpVersionPolicy.RequestVersionOrLower)
                 {
-                    version = HttpPrimitiveVersion.Version11;
+                    return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unable to create request for HTTP/{version.Major}.{version.Minor} with a {nameof(Http1Connection)}.")));
                 }
-                return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unable to create request for HTTP/{version.Major}.{version.Minor} with a {nameof(Http1Connection)}.")));
+
+                version = _version;
+            }
+
+            if (version != _version)
+            {
+                return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unable to create request for HTTP/{version.Major}.{version.Minor} with a {nameof(Http1Connection)} configured for HTTP/{_version.Major}.{_version.Minor}.")));
             }
 
             _writeState = WriteState.Unstarted;
@@ -140,7 +170,20 @@ namespace NetworkToolkit.Http.Primitives
 
         internal void ConfigureRequest(long? contentLength, bool hasTrailingHeaders)
         {
-            _requestIsChunked = contentLength == null || hasTrailingHeaders;
+            if (_version == HttpPrimitiveVersion.Version11)
+            {
+                _requestIsChunked = contentLength == null || hasTrailingHeaders;
+            }
+            else
+            {
+                Debug.Assert(_version == HttpPrimitiveVersion.Version10);
+
+                if (hasTrailingHeaders)
+                {
+                    throw new Exception("HTTP/1.0 does not support chunked encoding necessary for trailing headers.");
+                }
+                _requestIsChunked = false;
+            }
         }
 
         internal void WriteConnectRequest(ReadOnlySpan<byte> authority, HttpPrimitiveVersion version)
@@ -468,24 +511,22 @@ namespace NetworkToolkit.Http.Primitives
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        internal ValueTask CompleteRequestAsync(CancellationToken cancellationToken)
+        internal async ValueTask CompleteRequestAsync(CancellationToken cancellationToken)
         {
             FlushHeadersHelper(completingRequest: true);
             if (_writeBuffer.ActiveLength != 0)
             {
-                return CompleteRequestAsyncSlow(cancellationToken);
+                await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
+                _writeBuffer.Discard(_writeBuffer.ActiveLength);
             }
-            else
-            {
-                return new ValueTask(_stream.FlushAsync(cancellationToken));
-            }
-        }
 
-        private async ValueTask CompleteRequestAsyncSlow(CancellationToken cancellationToken)
-        {
-            await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
-            _writeBuffer.Discard(_writeBuffer.ActiveLength);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_closeConnection)
+            {
+                await _connection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+                _connectionState = HttpConnectionStatus.Closing;
+            }
         }
 
         internal ValueTask WriteContentAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
@@ -759,24 +800,26 @@ namespace NetworkToolkit.Http.Primitives
 
         partial void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)
         {
-            if (HeaderNamesEqual(headerName, s_EncodedContentLengthName))
+            switch (headerName.Length)
             {
-                if (!TryParseDecimalInteger(headerValue, out _responseContentBytesRemaining))
-                {
-                    throw new Exception("Response Content-Length header contains a malformed or too-large value.");
-                }
-                _responseHasContentLength = true;
-            }
-            else if (HeaderNamesEqual(headerName, s_EncodedTransferEncodingName))
-            {
-                if (headerValue.SequenceEqual(s_EncodedTransferEncodingChunkedValue))
-                {
+                case 10 when EqualsIgnoreCase(headerName, s_EncodedConnectionName) && EqualsIgnoreCase(headerValue, s_EncodedConnectionCloseValue):
+                    _closeConnection = true;
+                    break;
+                case 14 when EqualsIgnoreCase(headerName, s_EncodedContentLengthName):
+                    if (!TryParseDecimalInteger(headerValue, out _responseContentBytesRemaining))
+                    {
+                        throw new Exception("Response Content-Length header contains a malformed or too-large value.");
+                    }
+                    _responseHasContentLength = true;
+                    break;
+                case 17 when EqualsIgnoreCase(headerName, s_EncodedTransferEncodingName) && EqualsIgnoreCase(headerValue, s_EncodedTransferEncodingChunkedValue):
                     _responseIsChunked = true;
-                }
+                    break;
             }
         }
 
-        private static bool HeaderNamesEqual(ReadOnlySpan<byte> wireValue, ReadOnlySpan<byte> expectedValueLowerCase)
+        // TODO: in .NET 6, migrate to https://github.com/dotnet/runtime/issues/28230
+        private static bool EqualsIgnoreCase(ReadOnlySpan<byte> wireValue, ReadOnlySpan<byte> expectedValueLowerCase)
         {
             if (wireValue.Length != expectedValueLowerCase.Length) return false;
 
@@ -1026,36 +1069,37 @@ namespace NetworkToolkit.Http.Primitives
             }
 
             ulong contentLength = 0;
-            foreach (byte b in buffer)
+
+            try
             {
-                uint digit;
+                foreach (byte b in buffer)
+                {
+                    uint digit;
 
-                if ((digit = b - (uint)'0') <= 9)
-                {
-                }
-                else if ((digit = b - (uint)'a') <= 'f' - 'a')
-                {
-                    digit += 10;
-                }
-                else if ((digit = b - (uint)'A') <= 'F' - 'A')
-                {
-                    digit += 10;
-                }
-                else
-                {
-                    value = default;
-                    return false;
-                }
+                    if ((digit = b - (uint)'0') <= 9)
+                    {
+                    }
+                    else if ((digit = b - (uint)'a') <= 'f' - 'a')
+                    {
+                        digit += 10;
+                    }
+                    else if ((digit = b - (uint)'A') <= 'F' - 'A')
+                    {
+                        digit += 10;
+                    }
+                    else
+                    {
+                        value = default;
+                        return false;
+                    }
 
-                try
-                {
                     contentLength = checked(contentLength * 16u + digit);
                 }
-                catch (OverflowException)
-                {
-                    value = default;
-                    return false;
-                }
+            }
+            catch (OverflowException)
+            {
+                value = default;
+                return false;
             }
 
             value = contentLength;
@@ -1071,24 +1115,25 @@ namespace NetworkToolkit.Http.Primitives
             }
 
             ulong contentLength = 0;
-            foreach (byte b in buffer)
-            {
-                uint digit = b - (uint)'0';
-                if (digit > 9)
-                {
-                    value = default;
-                    return false;
-                }
 
-                try
+            try
+            {
+                foreach (byte b in buffer)
                 {
+                    uint digit = b - (uint)'0';
+                    if (digit > 9)
+                    {
+                        value = default;
+                        return false;
+                    }
+                    
                     contentLength = checked(contentLength * 10u + digit);
                 }
-                catch (OverflowException)
-                {
-                    value = default;
-                    return false;
-                }
+            }
+            catch (OverflowException)
+            {
+                value = default;
+                return false;
             }
 
             value = contentLength;

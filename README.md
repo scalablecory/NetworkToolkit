@@ -39,7 +39,7 @@ Avoid a connection pool to have exact control over connections.
 ```c#
 await using ConnectionFactory connectionFactory = new SocketConnectionFactory();
 await using Connection connection = await connectionFactory.ConnectAsync(new DnsEndPoint("microsoft.com", 80));
-await using HttpConnection httpConnection = new Http1Connection(connection.Stream);
+await using HttpConnection httpConnection = new Http1Connection(connection);
 await using ValueHttpRequest request = (await httpConnection.CreateNewRequestAsync(HttpPrimitiveVersion.Version11, HttpVersionPolicy.RequestVersionExact)).Value;
 
 request.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);

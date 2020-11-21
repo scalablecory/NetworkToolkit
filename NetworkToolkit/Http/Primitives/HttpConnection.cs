@@ -11,6 +11,16 @@ namespace NetworkToolkit.Http.Primitives
     public abstract class HttpConnection : ICancellableAsyncDisposable
     {
         /// <summary>
+        /// The current status of the connection.
+        /// </summary>
+        /// <remarks>
+        /// This should not be relied on to assume
+        /// <see cref="CreateNewRequestAsync(HttpPrimitiveVersion, HttpVersionPolicy, CancellationToken)"/>
+        /// will succeed. The connection may be closed between checking status and creating a request.
+        /// </remarks>
+        public abstract HttpConnectionStatus Status { get; }
+
+        /// <summary>
         /// Opens a new request on the connection.
         /// </summary>
         /// <param name="version">The HTTP version of the request to make.</param>

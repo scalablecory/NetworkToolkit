@@ -22,12 +22,12 @@ namespace NetworkToolkit.Http.Primitives
         /// <summary>
         /// The major version.
         /// </summary>
-        public int Major { get; private set; }
+        public int Major { get; }
 
         /// <summary>
         /// The minor version.
         /// </summary>
-        public int Minor { get; private set; }
+        public int Minor { get; }
 
         private HttpPrimitiveVersion(int majorVersion, int minorVersion, ulong encoded)
         {
