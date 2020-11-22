@@ -28,7 +28,8 @@ namespace NetworkToolkit
         public static string EscapeIdnHost(string hostName) =>
             new UriBuilder() { Scheme = Uri.UriSchemeHttp, Host = hostName, Port = 80 }.Uri.IdnHost;
 
-        public static void BlockForResult(ValueTask task)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void BlockForResult(in ValueTask task)
         {
             if (task.IsCompleted)
             {
@@ -40,7 +41,8 @@ namespace NetworkToolkit
             }
         }
 
-        public static T BlockForResult<T>(ValueTask<T> task)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static T BlockForResult<T>(in ValueTask<T> task)
         {
             return task.IsCompleted ? task.GetAwaiter().GetResult() : task.AsTask().GetAwaiter().GetResult();
         }

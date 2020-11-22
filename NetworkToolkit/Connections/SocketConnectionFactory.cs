@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,6 +23,40 @@ namespace NetworkToolkit.Connections
         private readonly AddressFamily _addressFamily;
         private readonly SocketType _socketType;
         private readonly ProtocolType _protocolType;
+        private readonly bool _corking, _fastOpen;
+
+        /// <summary>
+        /// Enables TCP_CORK, if available.
+        /// This option is only valid if the <see cref="ProtocolType"/> of <see cref="SocketConnectionFactory"/> is TCP.
+        /// </summary>
+        public bool EnableCorking
+        {
+            get => _corking;
+            init
+            {
+                if (value == true && _protocolType != ProtocolType.Tcp)
+                {
+                    throw new Exception($"{nameof(EnableCorking)} may only be enabled for a {nameof(ProtocolType)} of {nameof(ProtocolType.Tcp)}.");
+                }
+                _corking = value;
+            }
+        }
+
+        /// <summary>
+        /// Enables TCP_FASTOPEN, if available.
+        /// </summary>
+        public bool EnableFastOpen
+        {
+            get => _fastOpen;
+            init
+            {
+                if (value == true && _protocolType != ProtocolType.Tcp)
+                {
+                    throw new Exception($"{nameof(EnableCorking)} may only be enabled for a {nameof(ProtocolType)} of {nameof(ProtocolType.Tcp)}.");
+                }
+                _fastOpen = value;
+            }
+        }
 
         /// <summary>
         /// Instantiates a new <see cref="SocketConnectionFactory"/>.
@@ -79,6 +115,12 @@ namespace NetworkToolkit.Connections
                 if (protocolType == ProtocolType.Tcp)
                 {
                     sock.NoDelay = true;
+
+                    if (TcpFastOpenStream.IsSupported && EnableFastOpen)
+                    {
+                        int enabled = 1;
+                        sock.SetRawSocketOption(TcpFastOpenStream.IPPROTO_TCP, TcpFastOpenStream.TCP_FASTOPEN, MemoryMarshal.Cast<int, byte>(MemoryMarshal.CreateSpan(ref enabled, 1)));
+                    }
                 }
 
                 return sock;
@@ -96,8 +138,17 @@ namespace NetworkToolkit.Connections
         /// <param name="socket">The <see cref="Socket"/> to create a <see cref="NetworkStream"/> over.</param>
         /// <returns>A new <see cref="NetworkStream"/>. This stream must take ownership over <paramref name="socket"/>.</returns>
         /// <remarks>The default implementation returns a <see cref="GatheringNetworkStream"/>, offering better performance for supporting usage.</remarks>
-        protected virtual NetworkStream CreateStream(Socket socket) =>
-            new GatheringNetworkStream(socket, true);
+        protected internal virtual NetworkStream CreateStream(Socket socket)
+        {
+#pragma warning disable CA1416 // Validate platform compatibility
+            if (CorkingNetworkStream.IsSupported && _protocolType == ProtocolType.Tcp && EnableCorking)
+            {
+                return new CorkingNetworkStream(socket, ownsSocket: true);
+            }
+#pragma warning restore CA1416 // Validate platform compatibility
+
+            return new GatheringNetworkStream(socket, ownsSocket: true);
+        }
 
         /// <inheritdoc/>
         public override async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionProperties? options = null, CancellationToken cancellationToken = default)
@@ -106,10 +157,15 @@ namespace NetworkToolkit.Connections
 
             Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
 
+            if (TcpFastOpenStream.IsSupported && EnableFastOpen)
+            {
+                return new SocketConnection(sock, new TcpFastOpenStream(this, sock, endPoint));
+            }
+
             try
             {
                 await sock.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);
-                return new SocketConnection(CreateStream(sock));
+                return new SocketConnection(sock, CreateStream(sock));
             }
             catch
             {
@@ -214,7 +270,7 @@ namespace NetworkToolkit.Connections
 
                         try
                         {
-                            return new SocketConnection(_connectionFactory.CreateStream(socket));
+                            return new SocketConnection(socket, _connectionFactory.CreateStream(socket));
                         }
                         catch
                         {
@@ -251,10 +307,11 @@ namespace NetworkToolkit.Connections
             public override EndPoint? LocalEndPoint => Socket.LocalEndPoint;
             public override EndPoint? RemoteEndPoint => Socket.RemoteEndPoint;
 
-            private Socket Socket => ((NetworkStream)Stream).Socket;
+            private Socket Socket { get; }
 
-            public SocketConnection(NetworkStream stream) : base(stream)
+            public SocketConnection(Socket socket, Stream stream) : base(stream)
             {
+                Socket = socket;
             }
 
             protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
@@ -280,7 +337,7 @@ namespace NetworkToolkit.Connections
             public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
             {
                 await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                ((NetworkStream)Stream).Socket.Shutdown(SocketShutdown.Send);
+                Socket.Shutdown(SocketShutdown.Send);
             }
         }
 

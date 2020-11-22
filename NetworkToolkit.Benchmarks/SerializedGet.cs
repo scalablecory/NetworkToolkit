@@ -100,7 +100,7 @@ namespace NetworkToolkit.Benchmarks
             _connectionListener = _connectionFactory.ListenAsync().AsTask().Result;
             _server = new SimpleHttp1Server(_connectionListener, trigger: Encoding.ASCII.GetBytes("\r\n\r\n"), response: ResponseBytes!.Response);
             _connection = _connectionFactory.ConnectAsync(_connectionListener.EndPoint!).AsTask().Result;
-            _primitiveConnection = new Http1Connection(_connection);
+            _primitiveConnection = new Http1Connection(_connection, HttpPrimitiveVersion.Version11);
             _httpClient = new HttpMessageInvoker(new SocketsHttpHandler
             {
                 AllowAutoRedirect = false,

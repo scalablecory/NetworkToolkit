@@ -46,6 +46,9 @@ namespace NetworkToolkit.Http.Primitives
         /// </summary>
         public int MaximumDrainBytes { get; init; } = int.MaxValue;
 
+        /// <inheritdoc/>
+        public override HttpConnectionStatus Status => HttpConnectionStatus.Open;
+
         /// <summary>
         /// Instantiates a new <see cref="PooledHttpConnection"/>.
         /// </summary>
@@ -98,7 +101,7 @@ namespace NetworkToolkit.Http.Primitives
                     else
                     {
                         Connection con = await _connectionFactory.ConnectAsync(_endPoint, _endPoint, cancellationToken).ConfigureAwait(false);
-                        connection = new PooledHttp1Connection(con);
+                        connection = new PooledHttp1Connection(con, version);
                     }
                     break;
                 }
@@ -328,7 +331,7 @@ namespace NetworkToolkit.Http.Primitives
         {
             internal PooledHttp1Connection? _prev, _next;
 
-            public PooledHttp1Connection(Connection connection) : base(connection)
+            public PooledHttp1Connection(Connection connection, HttpPrimitiveVersion version) : base(connection, version)
             {
             }
         }

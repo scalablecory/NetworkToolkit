@@ -70,7 +70,7 @@ namespace NetworkToolkit.Tests.Http
                     async Task RunClientAsync()
                     {
                         Connection con = await connectionFactory.ConnectAsync(server.EndPoint!).ConfigureAwait(false);
-                        HttpConnection connection = new Http1Connection(con.Stream);
+                        HttpConnection connection = new Http1Connection(con, HttpPrimitiveVersion.Version11);
 
                         await using (con.ConfigureAwait(false))
                         await using (connection.ConfigureAwait(false))

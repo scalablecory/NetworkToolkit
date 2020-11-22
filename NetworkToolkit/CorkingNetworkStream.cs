@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,7 +18,6 @@ namespace NetworkToolkit
     /// <item><description>200ms to pass.</description></item>
     /// </list>
     /// </summary>
-    [SupportedOSPlatform("linux")]
     public sealed class CorkingNetworkStream : GatheringNetworkStream
     {
         const int IPPROTO_TCP = 6; // from netinet/in.h
