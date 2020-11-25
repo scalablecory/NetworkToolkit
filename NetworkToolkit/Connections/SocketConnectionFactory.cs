@@ -4,7 +4,6 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -23,7 +22,7 @@ namespace NetworkToolkit.Connections
         private readonly AddressFamily _addressFamily;
         private readonly SocketType _socketType;
         private readonly ProtocolType _protocolType;
-        private readonly bool _corking, _fastOpen;
+        private readonly bool _corking;
 
         /// <summary>
         /// Enables TCP_CORK, if available.
@@ -43,42 +42,15 @@ namespace NetworkToolkit.Connections
         }
 
         /// <summary>
-        /// Enables TCP_FASTOPEN, if available.
-        /// </summary>
-        public bool EnableFastOpen
-        {
-            get => _fastOpen;
-            init
-            {
-                if (value == true && _protocolType != ProtocolType.Tcp)
-                {
-                    throw new Exception($"{nameof(EnableCorking)} may only be enabled for a {nameof(ProtocolType)} of {nameof(ProtocolType.Tcp)}.");
-                }
-                _fastOpen = value;
-            }
-        }
-
-        /// <summary>
         /// Instantiates a new <see cref="SocketConnectionFactory"/>.
         /// </summary>
         /// <param name="socketType">The <see cref="SocketType"/> to use when creating sockets.</param>
         /// <param name="protocolType">The <see cref="ProtocolType"/> to use when creating sockets.</param>
-        /// <remarks>
-        /// If TCP values are specified and the OS supports it, sockets opened by this <see cref="SocketConnectionFactory"/> will be dual-mode IPv6.
-        /// Socket options can be customized by overriding the <see cref="CreateSocket(AddressFamily, SocketType, ProtocolType)"/> method.
-        /// </remarks>
-        public SocketConnectionFactory(SocketType socketType = SocketType.Stream, ProtocolType protocolType = ProtocolType.Tcp)
-            : this(AddressFamily.Unspecified, socketType, protocolType)
-        {
-        }
-
-        /// <summary>
-        /// Instantiates a new <see cref="SocketConnectionFactory"/>.
-        /// </summary>
-        /// <param name="addressFamily">The <see cref="AddressFamily"/> to use when creating sockets.</param>
-        /// <param name="socketType">The <see cref="SocketType"/> to use when creating sockets.</param>
-        /// <param name="protocolType">The <see cref="ProtocolType"/> to use when creating sockets.</param>
-        public SocketConnectionFactory(AddressFamily addressFamily, SocketType socketType = SocketType.Stream, ProtocolType protocolType = ProtocolType.Tcp)
+        /// <param name="addressFamily">
+        /// The <see cref="AddressFamily"/> to use when creating sockets.
+        /// If <see cref="AddressFamily.Unspecified"/> (the default), IPv6 or IPv4 will be used based on platform support.
+        /// </param>
+        public SocketConnectionFactory(SocketType socketType = SocketType.Stream, ProtocolType protocolType = ProtocolType.Tcp, AddressFamily addressFamily = AddressFamily.Unspecified)
         {
             _addressFamily =
                 _addressFamily != AddressFamily.Unspecified ? addressFamily :
@@ -115,12 +87,6 @@ namespace NetworkToolkit.Connections
                 if (protocolType == ProtocolType.Tcp)
                 {
                     sock.NoDelay = true;
-
-                    if (TcpFastOpenStream.IsSupported && EnableFastOpen)
-                    {
-                        int enabled = 1;
-                        sock.SetRawSocketOption(TcpFastOpenStream.IPPROTO_TCP, TcpFastOpenStream.TCP_FASTOPEN, MemoryMarshal.Cast<int, byte>(MemoryMarshal.CreateSpan(ref enabled, 1)));
-                    }
                 }
 
                 return sock;
@@ -140,6 +106,8 @@ namespace NetworkToolkit.Connections
         /// <remarks>The default implementation returns a <see cref="GatheringNetworkStream"/>, offering better performance for supporting usage.</remarks>
         protected internal virtual NetworkStream CreateStream(Socket socket)
         {
+            if (socket == null) throw new ArgumentNullException(nameof(socket));
+
 #pragma warning disable CA1416 // Validate platform compatibility
             if (CorkingNetworkStream.IsSupported && _protocolType == ProtocolType.Tcp && EnableCorking)
             {
@@ -156,11 +124,6 @@ namespace NetworkToolkit.Connections
             if (endPoint == null) throw new ArgumentNullException(nameof(endPoint));
 
             Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
-
-            if (TcpFastOpenStream.IsSupported && EnableFastOpen)
-            {
-                return new SocketConnection(sock, new TcpFastOpenStream(this, sock, endPoint));
-            }
 
             try
             {

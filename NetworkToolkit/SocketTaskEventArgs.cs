@@ -43,5 +43,10 @@ namespace NetworkToolkit
 
         void IValueTaskSource<T>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
             _taskSource.OnCompleted(continuation, state, token, flags);
+
+        protected override void OnCompleted(SocketAsyncEventArgs e)
+        {
+            SetResult(default!);
+        }
     }
 }
