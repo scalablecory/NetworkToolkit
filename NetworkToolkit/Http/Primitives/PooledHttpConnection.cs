@@ -1,8 +1,6 @@
 ﻿using NetworkToolkit.Connections;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
@@ -22,11 +20,9 @@ namespace NetworkToolkit.Http.Primitives
         private readonly DnsEndPointWithProperties _endPoint;
         private readonly object _sync = new object();
 
-        private PooledHttp1Connection? _http1Head;
-        private PooledHttp1Connection? _http1Tail;
+        private IntrusiveLinkedList<PooledHttp1Connection> _http1;
 
-        private PooledHttpRequest? _requestCacheHead;
-        private PooledHttpRequest? _requestCacheTail;
+        private IntrusiveLinkedList<PooledHttpRequest> _requestCache;
 
         /// <summary>
         /// The maximum lifetime of a pooled connection.
@@ -140,133 +136,48 @@ namespace NetworkToolkit.Http.Primitives
 
         private PooledHttp1Connection? PopHttp1ConnectionFromTail()
         {
-            PooledHttp1Connection? connection;
-
             lock (_sync)
             {
-                connection = _http1Tail;
-                if (connection == null)
-                {
-                    return null;
-                }
-
-                _http1Tail = connection._prev;
-                if (_http1Tail != null)
-                {
-                    _http1Tail._next = null;
-                }
-                else
-                {
-                    _http1Head = null;
-                    _http1Tail = null;
-                }
+                return _http1.PopBack();
             }
-
-            return connection;
         }
 
         private PooledHttp1Connection? PopExpiredHttp1ConnectionFromHead(long curTicks, TimeSpan lifetimeLimit, TimeSpan idleLimit)
         {
-            PooledHttp1Connection? first;
-
             lock (_sync)
             {
-                first = _http1Head;
-
-                if (first != null && first.IsExpired(curTicks, lifetimeLimit, idleLimit))
+                if (_http1.Front is PooledHttp1Connection con && con.IsExpired(curTicks, lifetimeLimit, idleLimit))
                 {
-                    PooledHttp1Connection? last = first;
-
-                    while (last._next is PooledHttp1Connection next && next.IsExpired(curTicks, lifetimeLimit, idleLimit))
-                    {
-                        last = next;
-                    }
-
-                    _http1Head = last._next;
-                    if (_http1Head != null)
-                    {
-                        _http1Head._prev = null;
-                    }
-                    else
-                    {
-                        _http1Tail = null;
-                    }
-
-                    last._next = null;
+                    return _http1.PopFront();
                 }
             }
 
-            return first;
+            return null;
         }
 
-        private void PushHttp1Connection(PooledHttp1Connection connection)
+        private void PushHttp1ConnectionToTail(PooledHttp1Connection connection)
         {
-            Debug.Assert(connection._prev == null);
-            Debug.Assert(connection._next == null);
-
             lock (_sync)
             {
-                if (_http1Tail is PooledHttp1Connection tail)
-                {
-                    tail._next = connection;
-                    connection._prev = tail;
-                    _http1Tail = connection;
-                }
-                else
-                {
-                    _http1Head = connection;
-                    _http1Tail = connection;
-                }
+                _http1.PushBack(connection);
             }
         }
 
         private PooledHttpRequest? PopCachedRequestFromTail()
         {
-            PooledHttpRequest? request;
-
             lock (_sync)
             {
-                request = _requestCacheTail;
-                if (request != null)
-                {
-                    _requestCacheTail = request._prev;
-                    if (_requestCacheTail != null)
-                    {
-                        _requestCacheTail._next = null;
-                        request._prev = null;
-                    }
-                    else
-                    {
-                        _requestCacheHead = null;
-                        _requestCacheTail = null;
-                    }
-
-                }
+                return _requestCache.PopBack();
             }
-
-            return request;
         }
 
-        private void PushCachedRequest(PooledHttpRequest request)
+        private void PushCachedRequestToTail(PooledHttpRequest request)
         {
-            Debug.Assert(request._prev == null);
-            Debug.Assert(request._next == null);
-
             request._lastUsedTicks = Environment.TickCount64;
 
             lock (_sync)
             {
-                if (_requestCacheTail is PooledHttpRequest tail)
-                {
-                    tail._next = request;
-                    request._prev = tail;
-                    _requestCacheTail = request;
-                }
-                else
-                {
-                    _requestCacheHead = request;
-                    _requestCacheTail = request;
-                }
+                _requestCache.PushBack(request);
             }
         }
 
@@ -283,13 +194,8 @@ namespace NetworkToolkit.Http.Primitives
             List<ValueTask>? tasks = null;
             List<Exception>? exceptions = null;
 
-            PooledHttp1Connection? connection = PopExpiredHttp1ConnectionFromHead(curTicks, lifetimeLimit, idleLimit);
-            while (connection != null)
+            while(PopExpiredHttp1ConnectionFromHead(curTicks, lifetimeLimit, idleLimit) is PooledHttp1Connection connection)
             {
-                PooledHttp1Connection? next = connection._next;
-                connection._next = null;
-                connection._prev = null;
-
                 try
                 {
                     ValueTask task = connection.DisposeAsync(cancellationToken);
@@ -300,8 +206,6 @@ namespace NetworkToolkit.Http.Primitives
                 {
                     (exceptions ??= new List<Exception>()).Add(ex);
                 }
-
-                connection = next;
             }
 
             // TODO: also prune cached requests.
@@ -327,21 +231,24 @@ namespace NetworkToolkit.Http.Primitives
             }
         }
 
-        private sealed class PooledHttp1Connection : Http1Connection
+        private sealed class PooledHttp1Connection : Http1Connection, IIntrusiveLinkedListNode<PooledHttp1Connection>
         {
-            internal PooledHttp1Connection? _prev, _next;
+            private IntrusiveLinkedNodeHeader<PooledHttp1Connection> _listHeader;
+            public ref IntrusiveLinkedNodeHeader<PooledHttp1Connection> ListHeader => ref _listHeader;
 
             public PooledHttp1Connection(Connection connection, HttpPrimitiveVersion version) : base(connection, version)
             {
             }
         }
 
-        private sealed class PooledHttpRequest : HttpRequest
+        private sealed class PooledHttpRequest : HttpRequest, IIntrusiveLinkedListNode<PooledHttpRequest>
         {
             private ValueHttpRequest _request;
             private PooledHttpConnection? _owningConnection;
-            internal PooledHttpRequest? _prev, _next;
             internal long _lastUsedTicks;
+
+            private IntrusiveLinkedNodeHeader<PooledHttpRequest> _listHeader;
+            public ref IntrusiveLinkedNodeHeader<PooledHttpRequest> ListHeader => ref _listHeader;
 
             protected internal override EndPoint? LocalEndPoint => _request.LocalEndPoint;
             protected internal override EndPoint? RemoteEndPoint => _request.RemoteEndPoint;
@@ -393,11 +300,11 @@ namespace NetworkToolkit.Http.Primitives
                     await _request.DisposeAsync(cancellationToken).ConfigureAwait(false);
                     _owningConnection = null;
 
-                    owningConnection.PushCachedRequest(this);
+                    owningConnection.PushCachedRequestToTail(this);
 
                     if (!disposeConnection && !pooledConnection.IsExpired(Environment.TickCount64, owningConnection.PooledConnectionLifetimeLimit, owningConnection.PooledConnectionIdleLimit))
                     {
-                        owningConnection.PushHttp1Connection(pooledConnection);
+                        owningConnection.PushHttp1ConnectionToTail(pooledConnection);
                     }
                     else
                     {
