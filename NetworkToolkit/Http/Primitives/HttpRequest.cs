@@ -120,10 +120,9 @@ namespace NetworkToolkit.Http.Primitives
         /// </summary>
         /// <param name="version">The version of the request to operate on. This must be validated by implementations.</param>
         /// <param name="method">The request method to use.</param>
-        /// <param name="scheme">The request's scheme. Should generally be "http" or "https".</param>
         /// <param name="authority">The authority that should process the request. Ends up in the "Host" or ":authority" header, depending on protocol version.</param>
         /// <param name="pathAndQuery">The path and query of the request.</param>
-        protected internal abstract void WriteRequest(int version, ReadOnlySpan<byte> method, ReadOnlySpan<byte> scheme, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery);
+        protected internal abstract void WriteRequest(int version, ReadOnlySpan<byte> method, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery);
 
         /// <summary>
         /// Writes a header.
@@ -310,12 +309,12 @@ namespace NetworkToolkit.Http.Primitives
                 ? $"[{host}]:{port}"
                 : $"{host}:{port}";
 
-            byte[] schemeBytes = Encoding.ASCII.GetBytes(uri.Scheme);
+            // TODO: validate that scheme of URI is correct.
             byte[] authorityBytes = Encoding.ASCII.GetBytes(authority);
             byte[] methodBytes = Encoding.ASCII.GetBytes(method.Method);
             byte[] pathAndQueryBytes = Encoding.ASCII.GetBytes(uri.PathAndQuery);
 
-            WriteRequest(version, methodBytes, schemeBytes, authorityBytes, pathAndQueryBytes);
+            WriteRequest(version, methodBytes, authorityBytes, pathAndQueryBytes);
         }
 
         /// <summary>

@@ -403,10 +403,10 @@ namespace NetworkToolkit.Http.Primitives
                 _request.WriteTrailingHeader(name, values, separator);
             }
 
-            protected internal override void WriteRequest(int version, ReadOnlySpan<byte> method, ReadOnlySpan<byte> scheme, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery)
+            protected internal override void WriteRequest(int version, ReadOnlySpan<byte> method, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery)
             {
                 ThrowIfDisposed(version);
-                _request.WriteRequest(method, scheme, authority, pathAndQuery);
+                _request.WriteRequest(method, authority, pathAndQuery);
             }
 
             protected internal override void WriteRequest(int version, HttpMethod method, Uri uri)

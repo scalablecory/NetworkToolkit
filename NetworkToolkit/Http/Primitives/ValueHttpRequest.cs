@@ -77,11 +77,10 @@ namespace NetworkToolkit.Http.Primitives
         /// Writes a request.
         /// </summary>
         /// <param name="method">The request method to use.</param>
-        /// <param name="scheme">The request's scheme. Should generally be "http" or "https".</param>
         /// <param name="authority">The authority that should process the request. Ends up in the "Host" or ":authority" header, depending on protocol version.</param>
         /// <param name="pathAndQuery">The path and query of the request.</param>
-        public void WriteRequest(ReadOnlySpan<byte> method, ReadOnlySpan<byte> scheme, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery) =>
-            _request.WriteRequest(_requestVersion, method, scheme, authority, pathAndQuery);
+        public void WriteRequest(ReadOnlySpan<byte> method, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery) =>
+            _request.WriteRequest(_requestVersion, method, authority, pathAndQuery);
 
         /// <summary>
         /// Writes a request.
@@ -187,6 +186,7 @@ namespace NetworkToolkit.Http.Primitives
 
         /// <summary>
         /// Completes the request, flushing the request, headers, request content, and trailing headers to network, if any.
+        /// Must be called once all writing is finished.
         /// </summary>
         /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
         /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>

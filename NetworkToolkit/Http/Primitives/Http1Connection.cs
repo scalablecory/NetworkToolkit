@@ -53,13 +53,17 @@ namespace NetworkToolkit.Http.Primitives
         internal VectorArrayBuffer _readBuffer;
         internal ArrayBuffer _writeBuffer;
         private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new List<ReadOnlyMemory<byte>>(3);
-        private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk, _closeConnection;
+        private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk;
+        private volatile bool _closeConnection;
         private WriteState _writeState;
         private ulong _responseContentBytesRemaining, _responseChunkBytesRemaining;
         private Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>>? _readFunc;
         private HttpConnectionStatus _connectionState;
 
-        internal Http1Request? _request;
+        private object _sync => _gatheredWriteBuffer; // this guards the following three fields.
+        private IntrusiveLinkedList<Http1Request> _requestCache; // a cache of requests.
+        private IntrusiveLinkedList<Http1Request> _activeRequests; // currently active requests. current reader is _activeRequests.Front.
+        private Http1Request? _currentWriter; // the current writer.
 
         private enum WriteState : byte
         {
@@ -81,7 +85,8 @@ namespace NetworkToolkit.Http.Primitives
         /// <param name="connection">The <see cref="Connection"/> to read and write to.</param>
         /// <param name="version">
         /// The HTTP version to make requests as.
-        /// This must be one of <see cref="HttpPrimitiveVersion.Version10"/> or <see cref="HttpPrimitiveVersion.Version11"/>.</param>
+        /// This must be one of <see cref="HttpPrimitiveVersion.Version10"/> or <see cref="HttpPrimitiveVersion.Version11"/>.
+        /// </param>
         public Http1Connection(Connection connection, HttpPrimitiveVersion version)
         {
             if (connection == null) throw new ArgumentNullException(nameof(connection));
@@ -111,6 +116,8 @@ namespace NetworkToolkit.Http.Primitives
             _gatheringStream = gatheringStream;
             _readBuffer = new VectorArrayBuffer(initialSize: 4096);
             _writeBuffer = new ArrayBuffer(initialSize: 64);
+
+            PrepareForNextReader();
         }
 
         /// <inheritdoc/>
@@ -125,11 +132,6 @@ namespace NetworkToolkit.Http.Primitives
         /// <inheritdoc/>
         public override ValueTask<ValueHttpRequest?> CreateNewRequestAsync(HttpPrimitiveVersion version, HttpVersionPolicy versionPolicy, CancellationToken cancellationToken = default)
         {
-            if (_writeBuffer.ActiveLength != 0 || _responseContentBytesRemaining != 0)
-            {
-                return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception("Unable to create request stream with a request already pending.")));
-            }
-
             if (version.Major != 1)
             {
                 if (versionPolicy != HttpVersionPolicy.RequestVersionOrLower)
@@ -145,23 +147,118 @@ namespace NetworkToolkit.Http.Primitives
                 return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unable to create request for HTTP/{version.Major}.{version.Minor} with a {nameof(Http1Connection)} configured for HTTP/{_version.Major}.{_version.Minor}.")));
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return ValueTask.FromCanceled<ValueHttpRequest?>(cancellationToken);
+            }
+
+            if (_closeConnection)
+            {
+                return ValueTask.FromResult<ValueHttpRequest?>(null);
+            }
+
+            Http1Request request;
+            bool immediateStart = false;
+
+            lock (_sync)
+            {
+                bool waitForRead = _activeRequests.Front is not null;
+
+                if (_requestCache.PopBack() is Http1Request cachedRequest)
+                {
+                    cachedRequest.Init(this, waitForRead);
+                    request = cachedRequest;
+                }
+                else
+                {
+                    request = new Http1Request(this, waitForRead);
+                }
+
+                if (_currentWriter is null)
+                {
+                    immediateStart = true;
+                    _currentWriter = request;
+                }
+
+                _activeRequests.PushBack(request);
+            }
+
+            if (!immediateStart)
+            {
+                // waiting for another request to complete.
+                return request.GetWriteWaitTask(cancellationToken);
+            }
+
+            // no active request: start immediately.
+            PrepareForNextWriter();
+            return new ValueTask<ValueHttpRequest?>(request.GetValueRequest());
+        }
+
+        private void ReleaseNextWriter()
+        {
+            Http1Request? nextWriter;
+
+            lock (_sync)
+            {
+                Debug.Assert(_currentWriter != null);
+
+                nextWriter = _currentWriter.ListHeader.Next;
+                _currentWriter = nextWriter;
+            }
+
+            if (nextWriter != null)
+            {
+                PrepareForNextWriter();
+                nextWriter.ReleaseWriteWait();
+            }
+        }
+
+        private void PrepareForNextWriter()
+        {
             _writeState = WriteState.Unstarted;
             _requestIsChunked = true;
+        }
+
+        internal void ReleaseNextReader(Http1Request request)
+        {
+            Http1Request? nextReader;
+
+            lock (_sync)
+            {
+                nextReader = request.ListHeader.Next;
+
+                Debug.Assert(request == _activeRequests.Front);
+                _activeRequests.PopFront();
+
+                _requestCache.PushBack(request);
+            }
+
+            if (nextReader != null)
+            {
+                if (!_closeConnection)
+                {
+                    PrepareForNextReader();
+                    nextReader.ReleaseReadWait();
+                }
+                else
+                {
+                    nextReader.FailReadWait(new Exception("Drain failed; connection is ready to disposal."));
+                }
+            }
+        }
+
+        private void PrepareForNextReader()
+        {
             _responseHasContentLength = false;
             _responseIsChunked = false;
             _readingFirstResponseChunk = false;
             _readFunc = s_ReadResponse;
+        }
 
-            if (Interlocked.Exchange(ref _request, null) is Http1Request request)
-            {
-                request.Init(this, version);
-            }
-            else
-            {
-                request = new Http1Request(this, version);
-            }
-
-            return new ValueTask<ValueHttpRequest?>(request.GetValueRequest());
+        internal void DrainFailed()
+        {
+            _closeConnection = true;
+            // TODO: loop through waiters and cancel tasks.
         }
 
         /// <inheritdoc/>
@@ -186,7 +283,7 @@ namespace NetworkToolkit.Http.Primitives
             }
         }
 
-        internal void WriteConnectRequest(ReadOnlySpan<byte> authority, HttpPrimitiveVersion version)
+        internal void WriteConnectRequest(ReadOnlySpan<byte> authority)
         {
             if (_writeState != WriteState.Unstarted)
             {
@@ -202,7 +299,7 @@ namespace NetworkToolkit.Http.Primitives
 
             int len = GetEncodeConnectRequestLength(authority);
             _writeBuffer.EnsureAvailableSpace(len);
-            EncodeConnectRequest(authority, version, _writeBuffer.AvailableSpan);
+            EncodeConnectRequest(authority, _version, _writeBuffer.AvailableSpan);
             _writeBuffer.Commit(len);
             _writeState = WriteState.RequestWritten;
         }
@@ -234,21 +331,21 @@ namespace NetworkToolkit.Http.Primitives
             Debug.Assert(length == GetEncodeConnectRequestLength(authority));
         }
 
-        internal void WriteRequest(ReadOnlySpan<byte> method, ReadOnlySpan<byte> scheme, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery, HttpPrimitiveVersion version)
+        internal void WriteRequest(ReadOnlySpan<byte> method, ReadOnlySpan<byte> authority, ReadOnlySpan<byte> pathAndQuery)
         {
             if (_writeState != WriteState.Unstarted)
             {
                 throw new InvalidOperationException();
             }
 
-            if (method.Length == 0 || authority.Length == 0 || pathAndQuery.Length == 0 || version._encoded == 0)
+            if (method.Length == 0 || authority.Length == 0 || pathAndQuery.Length == 0)
             {
                 throw new ArgumentException("All parameters must be specified.");
             }
 
             int len = GetEncodeRequestLength(method, authority, pathAndQuery);
             _writeBuffer.EnsureAvailableSpace(len);
-            EncodeRequest(method, authority, pathAndQuery, version, _writeBuffer.AvailableSpan);
+            EncodeRequest(method, authority, pathAndQuery, _version, _writeBuffer.AvailableSpan);
             _writeBuffer.Commit(len);
             _writeState = WriteState.RequestWritten;
         }
@@ -527,7 +624,9 @@ namespace NetworkToolkit.Http.Primitives
                 await _connection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
                 _connectionState = HttpConnectionStatus.Closing;
             }
-        }
+
+            ReleaseNextWriter();
+        } 
 
         internal ValueTask WriteContentAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
         {
@@ -658,6 +757,7 @@ namespace NetworkToolkit.Http.Primitives
 
         internal ValueTask<HttpReadType> ReadAsync(Http1Request requestStream, CancellationToken cancellationToken)
         {
+            // TODO: if we are not the current reader, wait for that to complete.
             return _readFunc!(this, requestStream, cancellationToken);
         }
 
@@ -711,7 +811,6 @@ namespace NetworkToolkit.Http.Primitives
                 }
 
                 buffer = buffer.Slice(9);
-                goto parseStatusCode;
             }
             else
             {

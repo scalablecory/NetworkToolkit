@@ -12,8 +12,6 @@ namespace NetworkToolkit.Tests.Http
 {
     public abstract class HttpGenericTests : TestsBase
     {
-        internal abstract Task RunSingleStreamTest(Func<ValueHttpRequest, Uri, Task> clientFunc, Func<HttpTestStream, Task> serverFunc, int? millisecondsTimeout = null);
-
         [Theory]
         [MemberData(nameof(NonChunkedData))]
         public async Task Send_NonChunkedRequest_Success(int testIdx, TestHeadersSink requestHeaders, List<string> requestContent)
@@ -258,5 +256,39 @@ namespace NetworkToolkit.Tests.Http
             new List<string> { "foo", "barbar" },
             new List<string> { "foo", "barbar", "bazbazbaz" }
         };
+
+        /// <summary>
+        /// If true, the current <see cref="Version"/> supports concurrent duplex streams.
+        /// </summary>
+        internal bool SupportsMultiStreamConcurrentTests => Version.Major >= 2;
+
+        internal abstract HttpPrimitiveVersion Version { get; }
+
+        internal abstract Task RunMultiStreamTest(Func<HttpConnection, Uri, Task> clientFunc, Func<HttpTestConnection, Task> serverFunc, int? millisecondsTimeout = null);
+
+        internal async Task RunSingleStreamTest(Func<ValueHttpRequest, Uri, Task> clientFunc, Func<HttpTestStream, Task> serverFunc, int? millisecondsTimeout = null)
+        {
+            await RunMultiStreamTest(
+                async (client, serverUri) =>
+                {
+                    ValueHttpRequest? optionalRequest = await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact).ConfigureAwait(false);
+                    Assert.NotNull(optionalRequest);
+
+                    ValueHttpRequest request = optionalRequest.Value;
+                    await using (request.ConfigureAwait(false))
+                    {
+                        await clientFunc(request, serverUri).ConfigureAwait(false);
+                        await request.DrainAsync().ConfigureAwait(false);
+                    }
+                },
+                async server =>
+                {
+                    HttpTestStream request = await server.AcceptStreamAsync().ConfigureAwait(false);
+                    await using (request.ConfigureAwait(false))
+                    {
+                        await serverFunc(request).ConfigureAwait(false);
+                    }
+                }, millisecondsTimeout).ConfigureAwait(false);
+        }
     }
 }

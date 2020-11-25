@@ -18,8 +18,8 @@ namespace NetworkToolkit.Tests.Http.Servers
         internal readonly Stream _stream;
         internal ArrayBuffer _readBuffer;
 
-        private long? _contentLength;
-        private bool _isChunked;
+        private long? _responseContentLength;
+        private bool _responseIsChunked;
 
         public Http1TestConnection(Connection connection)
         {
@@ -54,25 +54,25 @@ namespace NetworkToolkit.Tests.Http.Servers
 
             TestHeadersSink headers = await ReadHeadersAsync().ConfigureAwait(false);
 
-            _contentLength =
-                headers.TryGetSingleValue("content-length", out string? contentLength) ? int.Parse(contentLength, NumberStyles.None, CultureInfo.InvariantCulture) :
-                method switch
+            _responseContentLength = headers.TryGetSingleValue("content-length", out string? contentLength)
+                ? int.Parse(contentLength, NumberStyles.None, CultureInfo.InvariantCulture)
+                : method switch
                 {
                     "GET" or "HEAD" or "DELETE" or "TRACE" => 0,
                     _ => (int?)null
                 };
-            _isChunked = headers.TryGetSingleValue("transfer-encoding", out string? transferEncoding) && transferEncoding == "chunked";
+            _responseIsChunked = headers.TryGetSingleValue("transfer-encoding", out string? transferEncoding) && transferEncoding == "chunked";
 
             return new HttpTestRequest(method, pathAndQuery, version, headers);
         }
 
         internal Stream ReceiveContentStream() =>
-            _isChunked ? new Http1TestChunkedStream(this, _contentLength) :
-            _contentLength != null ? new Http1TestContentLengthStream(this, _contentLength.Value) :
+            _responseIsChunked ? new Http1TestChunkedStream(this, _responseContentLength) :
+            _responseContentLength != null ? new Http1TestContentLengthStream(this, _responseContentLength.Value) :
             new Http1TestLengthlessStream(this);
 
         internal async Task<TestHeadersSink> ReceiveTrailingHeadersAsync() =>
-            _isChunked ? await ReadHeadersAsync().ConfigureAwait(false) : new TestHeadersSink();
+            _responseIsChunked ? await ReadHeadersAsync().ConfigureAwait(false) : new TestHeadersSink();
 
         private async Task<TestHeadersSink> ReadHeadersAsync()
         {
