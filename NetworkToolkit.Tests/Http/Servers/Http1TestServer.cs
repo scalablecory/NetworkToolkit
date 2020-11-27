@@ -9,7 +9,7 @@ namespace NetworkToolkit.Tests.Http.Servers
     {
         private readonly ConnectionListener _listener;
 
-        public EndPoint? EndPoint => _listener.EndPoint;
+        public override EndPoint? EndPoint => _listener.EndPoint;
 
         public Http1TestServer(ConnectionListener connectionListener)
         {

@@ -1,9 +1,11 @@
 ﻿using NetworkToolkit.Connections;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,8 +19,10 @@ namespace NetworkToolkit.Http.Primitives
         private static readonly List<SslApplicationProtocol> s_http1Alpn = new List<SslApplicationProtocol> { SslApplicationProtocol.Http11 };
 
         private readonly ConnectionFactory _connectionFactory;
-        private readonly DnsEndPointWithProperties _endPoint;
+        private readonly EndPoint _endPoint;
+        private readonly SslClientConnectionProperties? _sslConnectionProperties;
         private readonly object _sync = new object();
+        private volatile bool _disposed = false;
 
         private IntrusiveLinkedList<PooledHttp1Connection> _http1;
 
@@ -49,35 +53,55 @@ namespace NetworkToolkit.Http.Primitives
         /// Instantiates a new <see cref="PooledHttpConnection"/>.
         /// </summary>
         /// <param name="connectionFactory">A connection factory used to establish connections for HTTP/1 and HTTP/2.</param>
-        /// <param name="host">The host being connected to.</param>
-        /// <param name="port">The port being connected to.</param>
+        /// <param name="endPoint">The <see cref="EndPoint"/> to connect to.</param>
         /// <param name="sslTargetHost">The target host of SSL connections, sent via SNI.</param>
-        public PooledHttpConnection(ConnectionFactory connectionFactory, string host, int port, string? sslTargetHost)
+        public PooledHttpConnection(ConnectionFactory connectionFactory, EndPoint endPoint, string? sslTargetHost)
         {
             _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
-
-            SslClientAuthenticationOptions? sslOptions = null;
+            _endPoint = endPoint ?? throw new ArgumentNullException(nameof(endPoint));
 
             if (sslTargetHost != null)
             {
-                sslOptions = new SslClientAuthenticationOptions
+                _sslConnectionProperties = new SslClientConnectionProperties(new SslClientAuthenticationOptions
                 {
                     TargetHost = sslTargetHost,
                     ApplicationProtocols = s_http1Alpn
-                };
+                });
+            }
+        }
+
+        /// <inheritdoc/>
+        public override async ValueTask DisposeAsync(CancellationToken cancellationToken)
+        {
+            _disposed = true;
+
+            Http1Connection? con;
+            while ((con = PopHttp1ConnectionFromTail()) != null)
+            {
+                await con.DisposeAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            _endPoint = new DnsEndPointWithProperties(host, port, sslOptions);
+            while (PopCachedRequestFromTail() != null) ;
         }
 
         /// <inheritdoc/>
-        public override ValueTask DisposeAsync(CancellationToken cancellationToken)
+        public override ValueTask<ValueHttpRequest?> CreateNewRequestAsync(HttpPrimitiveVersion version, HttpVersionPolicy versionPolicy, CancellationToken cancellationToken = default)
         {
-            throw new NotImplementedException();
+            if (version == null) return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new ArgumentNullException(nameof(version))));
+            if (_disposed) return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new ObjectDisposedException(nameof(PooledHttpRequest))));
+            if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled<ValueHttpRequest?>(cancellationToken);
+
+            Debug.Assert(version.Major >= 1);
+
+            if (version.Major == 1 || versionPolicy == HttpVersionPolicy.RequestVersionOrLower)
+            {
+                return CreateNewHttp1RequestAsync(version, versionPolicy, cancellationToken);
+            }
+
+            return ValueTask.FromException<ValueHttpRequest?>(ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unable to satisfy {version} with {versionPolicy}.")));
         }
 
-        /// <inheritdoc/>
-        public override async ValueTask<ValueHttpRequest?> CreateNewRequestAsync(HttpPrimitiveVersion version, HttpVersionPolicy versionPolicy, CancellationToken cancellationToken = default)
+        private async ValueTask<ValueHttpRequest?> CreateNewHttp1RequestAsync(HttpPrimitiveVersion version, HttpVersionPolicy versionPolicy, CancellationToken cancellationToken)
         {
             while (true)
             {
@@ -96,7 +120,7 @@ namespace NetworkToolkit.Http.Primitives
                     }
                     else
                     {
-                        Connection con = await _connectionFactory.ConnectAsync(_endPoint, _endPoint, cancellationToken).ConfigureAwait(false);
+                        Connection con = await _connectionFactory.ConnectAsync(_endPoint, _sslConnectionProperties, cancellationToken).ConfigureAwait(false);
                         connection = new PooledHttp1Connection(con, version);
                     }
                     break;
@@ -253,6 +277,8 @@ namespace NetworkToolkit.Http.Primitives
             protected internal override EndPoint? LocalEndPoint => _request.LocalEndPoint;
             protected internal override EndPoint? RemoteEndPoint => _request.RemoteEndPoint;
 
+            protected internal override ReadOnlyMemory<byte> AltSvc => _request.AltSvc;
+
             public PooledHttpRequest(ValueHttpRequest request, PooledHttpConnection owningConnection)
             {
                 _request = request;
@@ -300,16 +326,35 @@ namespace NetworkToolkit.Http.Primitives
                     await _request.DisposeAsync(cancellationToken).ConfigureAwait(false);
                     _owningConnection = null;
 
-                    owningConnection.PushCachedRequestToTail(this);
+                    bool owningConnectionDisposed = owningConnection._disposed;
 
-                    if (!disposeConnection && !pooledConnection.IsExpired(Environment.TickCount64, owningConnection.PooledConnectionLifetimeLimit, owningConnection.PooledConnectionIdleLimit))
+                    disposeConnection = disposeConnection
+                        || owningConnectionDisposed
+                        || pooledConnection.Status != HttpConnectionStatus.Open
+                        || pooledConnection.IsExpired(Environment.TickCount64, owningConnection.PooledConnectionLifetimeLimit, owningConnection.PooledConnectionIdleLimit);
+
+                    if (!owningConnectionDisposed)
+                    {
+                        owningConnection.PushCachedRequestToTail(this);
+                    }
+
+                    if (!disposeConnection)
                     {
                         owningConnection.PushHttp1ConnectionToTail(pooledConnection);
+
+                        if (owningConnection._disposed)
+                        {
+                            // If the owning connection was disposed between last checking, the connection
+                            // will be pushed to freelist with noone else to dispose it.
+                            // Re-dispose the owning connection to clear out the freelist.
+                            await owningConnection.DisposeAsync(cancellationToken).ConfigureAwait(false);
+                        }
                     }
                     else
                     {
                         await pooledConnection.DisposeAsync(cancellationToken).ConfigureAwait(false);
                     }
+
                 }
             }
 
@@ -325,10 +370,21 @@ namespace NetworkToolkit.Http.Primitives
                 return _request.FlushHeadersAsync(cancellationToken);
             }
 
-            protected internal override ValueTask<HttpReadType> ReadAsync(int version, CancellationToken cancellationToken)
+            protected internal override async ValueTask<HttpReadType> ReadAsync(int version, CancellationToken cancellationToken)
             {
-                if (IsDisposed(version, out ValueTask<HttpReadType> task)) return task;
-                return _request.ReadAsync(cancellationToken);
+                ThrowIfDisposed(version);
+
+                HttpReadType readType = await _request.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+                ReadType = readType;
+
+                if (readType == HttpReadType.Response)
+                {
+                    StatusCode = _request.StatusCode;
+                    Version = _request.Version;
+                }
+
+                return readType;
             }
 
             protected internal override ValueTask<int> ReadContentAsync(int version, Memory<byte> buffer, CancellationToken cancellationToken)

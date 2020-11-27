@@ -1,9 +1,11 @@
-﻿using NetworkToolkit.Http.Primitives;
+﻿using NetworkToolkit.Connections;
+using NetworkToolkit.Http.Primitives;
 using NetworkToolkit.Tests.Http.Servers;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
@@ -134,11 +136,13 @@ namespace NetworkToolkit.Tests.Http
                     await client.CompleteRequestAsync();
 
                     Assert.True(await client.ReadToResponseAsync());
+
                     Version version = client.Version!;
+                    Assert.NotNull(version);
 
                     TestHeadersSink headers = await client.ReadAllHeadersAsync();
 
-                    if (version.Major == 1)
+                    if (version.Major == Version.Major)
                     {
                         Assert.Equal("chunked", headers.GetSingleValue("transfer-encoding"));
                     }
@@ -258,13 +262,51 @@ namespace NetworkToolkit.Tests.Http
         };
 
         /// <summary>
+        /// If true, more than one stream can be opened on a single connection.
+        /// </summary>
+        internal bool SupportsMultiStreamTests => Version != HttpPrimitiveVersion.Version10;
+
+        /// <summary>
         /// If true, the current <see cref="Version"/> supports concurrent duplex streams.
         /// </summary>
         internal bool SupportsMultiStreamConcurrentTests => Version.Major >= 2;
 
         internal abstract HttpPrimitiveVersion Version { get; }
 
-        internal abstract Task RunMultiStreamTest(Func<HttpConnection, Uri, Task> clientFunc, Func<HttpTestConnection, Task> serverFunc, int? millisecondsTimeout = null);
+        internal virtual ConnectionFactory CreateConnectionFactory() => new MemoryConnectionFactory();
+        internal abstract Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory);
+        internal abstract Task<HttpConnection> CreateTestClientAsync(ConnectionFactory connectionFactory, EndPoint endPoint);
+
+        internal virtual async Task RunMultiStreamTest(Func<HttpConnection, Uri, Task> clientFunc, Func<HttpTestConnection, Task> serverFunc, int? millisecondsTimeout = null)
+        {
+            ConnectionFactory connectionFactory = CreateConnectionFactory();
+            await using (connectionFactory.ConfigureAwait(false))
+            {
+                var server = await CreateTestServerAsync(connectionFactory);
+                await using (server.ConfigureAwait(false))
+                {
+                    await RunClientServer(RunClientAsync, RunServerAsync, millisecondsTimeout).ConfigureAwait(false);
+
+                    async Task RunClientAsync()
+                    {
+                        HttpConnection httpConnection = await CreateTestClientAsync(connectionFactory, server.EndPoint!).ConfigureAwait(false);
+                        await using (httpConnection.ConfigureAwait(false))
+                        {
+                            await clientFunc(httpConnection, server.Uri).ConfigureAwait(false);
+                        }
+                    }
+
+                    async Task RunServerAsync()
+                    {
+                        HttpTestConnection connection = await server.AcceptAsync().ConfigureAwait(false);
+                        await using (connection.ConfigureAwait(false))
+                        {
+                            await serverFunc(connection).ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+        }
 
         internal async Task RunSingleStreamTest(Func<ValueHttpRequest, Uri, Task> clientFunc, Func<HttpTestStream, Task> serverFunc, int? millisecondsTimeout = null)
         {

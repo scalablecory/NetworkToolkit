@@ -279,6 +279,7 @@ namespace NetworkToolkit.Http.Primitives
                 {
                     throw new Exception("HTTP/1.0 does not support chunked encoding necessary for trailing headers.");
                 }
+
                 _requestIsChunked = false;
             }
         }

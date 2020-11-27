@@ -81,7 +81,7 @@ A single-host connection pool handles concurrent HTTP/1 requests, H2C upgrade, A
 
 ```c#
 await using ConnectionFactory connectionFactory = new SocketConnectionFactory();
-await using HttpConnection httpConnection = new PooledHttpConnection(connectionFactory, "microsoft.com", 80, sslTargetHost: null);
+await using HttpConnection httpConnection = new PooledHttpConnection(connectionFactory, new DnsEndPoint("microsoft.com", 80), sslTargetHost: null);
 await using ValueHttpRequest request = (await httpConnection.CreateNewRequestAsync(HttpPrimitiveVersion.Version11, HttpVersionPolicy.RequestVersionExact)).Value;
 ```
 
@@ -109,7 +109,6 @@ Avoid `string` and `Uri` allocations, optimize away some related processing, and
 
 ```c#
 ReadOnlySpan<byte> method = HttpRequest.GetMethod; // "GET"
-ReadOnlySpan<byte> scheme = ...; // "https"
 ReadOnlySpan<byte> authority = ...; // "microsoft.com:80"
 ReadOnlySpan<byte> pathAndQuery = ...; // "/"
 
@@ -118,7 +117,7 @@ ReadOnlySpan<byte> headerValue = ...; // "text/html"
 
 await using ValueHttpRequest request = ...;
 request.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
-request.WriteRequest(method, scheme, authority, pathAndQuery);
+request.WriteRequest(method, authority, pathAndQuery);
 request.WriteHeader(headerName, headerValue);
 ```
 

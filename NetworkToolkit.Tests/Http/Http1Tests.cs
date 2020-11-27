@@ -1,7 +1,6 @@
 ﻿using NetworkToolkit.Connections;
 using NetworkToolkit.Http.Primitives;
 using NetworkToolkit.Tests.Http.Servers;
-using System;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
@@ -188,63 +187,11 @@ namespace NetworkToolkit.Tests.Http
         }
 
         internal override HttpPrimitiveVersion Version => HttpPrimitiveVersion.Version11;
-        public virtual ConnectionFactory CreateConnectionFactory() => new MemoryConnectionFactory();
-        internal override async Task RunMultiStreamTest(Func<HttpConnection, Uri, Task> clientFunc, Func<HttpTestConnection, Task> serverFunc, int? millisecondsTimeout = null)
-        {
-            ConnectionFactory connectionFactory = CreateConnectionFactory();
-            await using (connectionFactory.ConfigureAwait(false))
-            {
-                var server = new Http1TestServer(await connectionFactory.ListenAsync().ConfigureAwait(false));
-                await using (server.ConfigureAwait(false))
-                {
-                    var uriBuilder = new UriBuilder
-                    {
-                        Scheme = Uri.UriSchemeHttp,
-                        Path = "/"
-                    };
 
-                    switch (server.EndPoint)
-                    {
-                        case DnsEndPoint dnsEp:
-                            uriBuilder.Host = dnsEp.Host;
-                            uriBuilder.Port = dnsEp.Port;
-                            break;
-                        case IPEndPoint ipEp:
-                            uriBuilder.Host = ipEp.Address.ToString();
-                            uriBuilder.Port = ipEp.Port;
-                            break;
-                        default:
-                            uriBuilder.Host = "localhost";
-                            uriBuilder.Port = 80;
-                            break;
-                    }
+        internal override async Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory) =>
+            new Http1TestServer(await connectionFactory.ListenAsync().ConfigureAwait(false));
 
-                    Uri serverUri = uriBuilder.Uri;
-
-                    await RunClientServer(RunClientAsync, RunServerAsync, millisecondsTimeout).ConfigureAwait(false);
-
-                    async Task RunClientAsync()
-                    {
-                        Connection con = await connectionFactory.ConnectAsync(server.EndPoint!).ConfigureAwait(false);
-                        HttpConnection httpConnection = new Http1Connection(con, Version);
-
-                        await using (con.ConfigureAwait(false))
-                        await using (httpConnection.ConfigureAwait(false))
-                        {
-                            await clientFunc(httpConnection, serverUri).ConfigureAwait(false);
-                        }
-                    }
-
-                    async Task RunServerAsync()
-                    {
-                        HttpTestConnection connection = await server.AcceptAsync().ConfigureAwait(false);
-                        await using (connection.ConfigureAwait(false))
-                        {
-                            await serverFunc(connection).ConfigureAwait(false);
-                        }
-                    }
-                }
-            }
-        }
+        internal override async Task<HttpConnection> CreateTestClientAsync(ConnectionFactory connectionFactory, EndPoint endPoint) =>
+            new Http1Connection(await connectionFactory.ConnectAsync(endPoint), Version);
     }
 }

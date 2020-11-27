@@ -9,19 +9,18 @@ using System.Threading.Tasks;
 
 namespace NetworkToolkit.Http.Primitives
 {
-    internal sealed class DnsEndPointWithProperties : DnsEndPoint, IConnectionProperties
+    internal sealed class SslClientConnectionProperties : IConnectionProperties
     {
-        public SslClientAuthenticationOptions? SslOptions { get; }
+        public SslClientAuthenticationOptions SslOptions { get; }
 
-        public DnsEndPointWithProperties(string host, int port, SslClientAuthenticationOptions? sslOptions)
-            : base(host, port)
+        public SslClientConnectionProperties(SslClientAuthenticationOptions sslOptions)
         {
             SslOptions = sslOptions;
         }
 
         public bool TryGetProperty(Type type, out object? value)
         {
-            if (type == typeof(SslClientAuthenticationOptions) && SslOptions is SslClientAuthenticationOptions nonNullOptions)
+            if (type == typeof(SslClientAuthenticationOptions))
             {
                 value = SslOptions;
                 return true;

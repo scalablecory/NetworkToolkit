@@ -36,7 +36,7 @@ namespace NetworkToolkit.ProfilerTest
                     ?? throw new Exception("HttpConnection failed to return a request");
 
                 request.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
-                request.WriteRequest(HttpRequest.GetMethod, scheme, authority, pathAndQuery);
+                request.WriteRequest(HttpRequest.GetMethod, authority, pathAndQuery);
 
                 request.WriteHeader(preparedRequestHeaders);
 
@@ -54,7 +54,6 @@ namespace NetworkToolkit.ProfilerTest
             }
         }
 
-        static readonly byte[] scheme = Encoding.ASCII.GetBytes("http");
         static readonly byte[] authority = Encoding.ASCII.GetBytes("localhost");
         static readonly byte[] pathAndQuery = Encoding.ASCII.GetBytes("/");
 

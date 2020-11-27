@@ -23,7 +23,7 @@ namespace NetworkToolkit.Benchmarks
 
         private Connection? _connection;
         private HttpConnection? _primitiveConnection;
-        private byte[]? _encodedScheme, _encodedAuthority, _encodedPathAndQuery;
+        private byte[]? _encodedAuthority, _encodedPathAndQuery;
 
         [ParamsSource(nameof(ValuesForRequestHeaders))]
         public RequestHeaderCollection? RequestHeaders { get; set; }
@@ -110,7 +110,6 @@ namespace NetworkToolkit.Benchmarks
             });
 
             _uri = new Uri("http://localhost/");
-            _encodedScheme = Encoding.ASCII.GetBytes("http");
             _encodedAuthority = Encoding.ASCII.GetBytes(_uri.IdnHost);
             _encodedPathAndQuery = Encoding.ASCII.GetBytes("/");
         }
@@ -139,7 +138,7 @@ namespace NetworkToolkit.Benchmarks
             await using (request.ConfigureAwait(false))
             {
                 request.ConfigureRequest(contentLength: 0, hasTrailingHeaders: false);
-                request.WriteRequest(HttpRequest.GetMethod, _encodedScheme!, _encodedAuthority!, _encodedPathAndQuery!);
+                request.WriteRequest(HttpRequest.GetMethod, _encodedAuthority!, _encodedPathAndQuery!);
 
                 if (encodedHeaders != null)
                 {
