@@ -65,8 +65,11 @@ namespace NetworkToolkit.Connections
         /// <inheritdoc/>
         public override async ValueTask<ConnectionListener> ListenAsync(EndPoint? endPoint = null, IConnectionProperties? options = null, CancellationToken cancellationToken = default)
         {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            SslServerAuthenticationOptions sslOptions = options.GetProperty(SslServerAuthenticationOptionsPropertyKey);
+
             ConnectionListener baseListener = await _baseFactory.ListenAsync(endPoint, options, cancellationToken).ConfigureAwait(false);
-            return new SslListener(baseListener);
+            return new SslListener(baseListener, sslOptions);
         }
 
         /// <inheritdoc/>
@@ -77,16 +80,15 @@ namespace NetworkToolkit.Connections
 
         private sealed class SslListener : FilteringConnectionListener
         {
+            private readonly SslServerAuthenticationOptions _sslOptions;
 
-            public SslListener(ConnectionListener baseListener) : base(baseListener)
+            public SslListener(ConnectionListener baseListener, SslServerAuthenticationOptions sslOptions) : base(baseListener)
             {
+                _sslOptions = sslOptions;
             }
 
             public override async ValueTask<Connection?> AcceptConnectionAsync(IConnectionProperties? options = null, CancellationToken cancellationToken = default)
             {
-                if (options == null) throw new ArgumentNullException(nameof(options));
-                SslServerAuthenticationOptions sslOptions = options.GetProperty(SslServerAuthenticationOptionsPropertyKey);
-
                 Connection? baseConnection = await BaseListener.AcceptConnectionAsync(options, cancellationToken).ConfigureAwait(false);
 
                 if (baseConnection == null)
@@ -99,13 +101,12 @@ namespace NetworkToolkit.Connections
                 try
                 {
                     stream = new SslStream(baseConnection.Stream, leaveInnerStreamOpen: false);
-                    await stream.AuthenticateAsServerAsync(sslOptions, cancellationToken).ConfigureAwait(false);
-
+                    await stream.AuthenticateAsServerAsync(_sslOptions, cancellationToken).ConfigureAwait(false);
                     return new SslConnection(baseConnection, stream);
                 }
                 catch
                 {
-                    if (stream != null) await stream.DisposeAsync().ConfigureAwait(false);
+                    if(stream != null) await stream.DisposeAsync().ConfigureAwait(false);
                     await baseConnection.DisposeAsync(cancellationToken).ConfigureAwait(false);
                     throw;
                 }
@@ -116,6 +117,13 @@ namespace NetworkToolkit.Connections
         {
             public SslConnection(Connection baseConnection, SslStream stream) : base(baseConnection, stream)
             {
+            }
+
+            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
+            {
+                // TODO: this needs to send the TLS close_notify message. Currently no way to do this.
+                // SslStream.Shutdown() performs a bidirectional close, but we need unidirectional.
+                return new ValueTask(Stream.FlushAsync(cancellationToken));
             }
 
             public override bool TryGetProperty(Type type, out object? value)

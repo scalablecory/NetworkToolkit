@@ -66,6 +66,7 @@ namespace NetworkToolkit.Connections
 
         /// <summary>
         /// Disposes of the connection.
+        /// The connection's <see cref="Stream"/> will be disposed immediately after <see cref="DisposeAsyncCore(CancellationToken)"/>.
         /// </summary>
         /// <param name="cancellationToken">
         /// A cancellation token for the asynchronous operation.

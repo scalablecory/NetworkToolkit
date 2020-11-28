@@ -189,9 +189,14 @@ namespace NetworkToolkit.Tests.Http
         internal override HttpPrimitiveVersion Version => HttpPrimitiveVersion.Version11;
 
         internal override async Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory) =>
-            new Http1TestServer(await connectionFactory.ListenAsync().ConfigureAwait(false));
+            new Http1TestServer(await connectionFactory.ListenAsync(options: CreateListenerProperties()).ConfigureAwait(false));
 
         internal override async Task<HttpConnection> CreateTestClientAsync(ConnectionFactory connectionFactory, EndPoint endPoint) =>
-            new Http1Connection(await connectionFactory.ConnectAsync(endPoint), Version);
+            new Http1Connection(await connectionFactory.ConnectAsync(endPoint, options: CreateConnectProperties()), Version);
+    }
+
+    public class Http1SslTests : Http1Tests
+    {
+        internal override bool UseSsl => true;
     }
 }

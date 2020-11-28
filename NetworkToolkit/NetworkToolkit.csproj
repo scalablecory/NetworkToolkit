@@ -5,7 +5,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <VersionPrefix>1.0.0</VersionPrefix>
-    <VersionSuffix>alpha</VersionSuffix>
+    <VersionSuffix>alpha2</VersionSuffix>
     <Authors>scalablecory</Authors>
     <Description>Networking primitives for use with .NET, such as a low-level HTTP client and connection abstractions.</Description>
     <Copyright>© 2020, Cory Nelson</Copyright>

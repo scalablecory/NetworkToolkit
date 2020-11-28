@@ -1,28 +1,16 @@
 ﻿using NetworkToolkit.Connections;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
 using System.Net.Security;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace NetworkToolkit.Http.Primitives
 {
-    internal sealed class SslClientConnectionProperties : IConnectionProperties
+    internal sealed class SslClientConnectionProperties : SslClientAuthenticationOptions, IConnectionProperties
     {
-        public SslClientAuthenticationOptions SslOptions { get; }
-
-        public SslClientConnectionProperties(SslClientAuthenticationOptions sslOptions)
-        {
-            SslOptions = sslOptions;
-        }
-
         public bool TryGetProperty(Type type, out object? value)
         {
             if (type == typeof(SslClientAuthenticationOptions))
             {
-                value = SslOptions;
+                value = this;
                 return true;
             }
 

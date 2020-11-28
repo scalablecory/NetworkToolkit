@@ -20,7 +20,7 @@ namespace NetworkToolkit.Http.Primitives
 
         private readonly ConnectionFactory _connectionFactory;
         private readonly EndPoint _endPoint;
-        private readonly SslClientConnectionProperties? _sslConnectionProperties;
+        private readonly SslClientConnectionProperties? _http1SslConnectionProperties;
         private readonly object _sync = new object();
         private volatile bool _disposed = false;
 
@@ -54,20 +54,30 @@ namespace NetworkToolkit.Http.Primitives
         /// </summary>
         /// <param name="connectionFactory">A connection factory used to establish connections for HTTP/1 and HTTP/2.</param>
         /// <param name="endPoint">The <see cref="EndPoint"/> to connect to.</param>
-        /// <param name="sslTargetHost">The target host of SSL connections, sent via SNI.</param>
-        public PooledHttpConnection(ConnectionFactory connectionFactory, EndPoint endPoint, string? sslTargetHost)
+        /// <param name="sslOptions">Options for SSL. The <paramref name="connectionFactory"/> must support receiving a <see cref="SslClientAuthenticationOptions"/> property.</param>
+        public PooledHttpConnection(ConnectionFactory connectionFactory, EndPoint endPoint, SslClientAuthenticationOptions? sslOptions)
         {
             _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
             _endPoint = endPoint ?? throw new ArgumentNullException(nameof(endPoint));
 
-            if (sslTargetHost != null)
+            if (sslOptions != null)
             {
-                _sslConnectionProperties = new SslClientConnectionProperties(new SslClientAuthenticationOptions
-                {
-                    TargetHost = sslTargetHost,
-                    ApplicationProtocols = s_http1Alpn
-                });
+                _http1SslConnectionProperties = CloneOptions(sslOptions);
+                _http1SslConnectionProperties.ApplicationProtocols = s_http1Alpn;
             }
+
+            static SslClientConnectionProperties CloneOptions(SslClientAuthenticationOptions options) => new SslClientConnectionProperties
+            {
+                AllowRenegotiation = options.AllowRenegotiation,
+                // ApplicationProtocols = options.ApplicationProtocols, // intentionally left off, as it will be set differently for each protocol.
+                CertificateRevocationCheckMode = options.CertificateRevocationCheckMode,
+                CipherSuitesPolicy = options.CipherSuitesPolicy,
+                EnabledSslProtocols = options.EnabledSslProtocols,
+                EncryptionPolicy = options.EncryptionPolicy,
+                LocalCertificateSelectionCallback = options.LocalCertificateSelectionCallback,
+                RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+                TargetHost = options.TargetHost
+            };
         }
 
         /// <inheritdoc/>
@@ -120,7 +130,7 @@ namespace NetworkToolkit.Http.Primitives
                     }
                     else
                     {
-                        Connection con = await _connectionFactory.ConnectAsync(_endPoint, _sslConnectionProperties, cancellationToken).ConfigureAwait(false);
+                        Connection con = await _connectionFactory.ConnectAsync(_endPoint, _http1SslConnectionProperties, cancellationToken).ConfigureAwait(false);
                         connection = new PooledHttp1Connection(con, version);
                     }
                     break;

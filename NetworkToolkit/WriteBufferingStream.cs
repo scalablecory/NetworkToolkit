@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
@@ -99,7 +100,7 @@ namespace NetworkToolkit
                 _disposed = true;
 
                 byte[]? buffer = Interlocked.Exchange(ref _buffer, null!);
-                if (buffer != null) ArrayPool<byte>.Shared.Return(_buffer);
+                if (buffer != null) ArrayPool<byte>.Shared.Return(buffer);
             }
 
             await base.DisposeAsync().ConfigureAwait(false);
@@ -194,6 +195,8 @@ namespace NetworkToolkit
                 buffer = buffer.Slice(len);
             }
 
+            Debug.Assert(_writePos == 0);
+
             if (buffer.Length >= _buffer.Length)
             {
                 _baseStream.Write(buffer);
@@ -203,7 +206,7 @@ namespace NetworkToolkit
             if (buffer.Length >= 0)
             {
                 buffer.CopyTo(_buffer);
-                _writePos += buffer.Length;
+                _writePos = buffer.Length;
             }
         }
 
@@ -240,8 +243,8 @@ namespace NetworkToolkit
 
             if (buffer.Length > 0)
             {
-                buffer.Span.CopyTo(_buffer.AsSpan(_writePos));
-                _writePos += buffer.Length;
+                buffer.Span.CopyTo(_buffer);
+                _writePos = buffer.Length;
             }
         }
 
@@ -250,7 +253,7 @@ namespace NetworkToolkit
         {
             for (int i = 0, count = buffers.Count; i < count; ++i)
             {
-                ReadOnlyMemory<byte> buffer = buffers[0];
+                ReadOnlyMemory<byte> buffer = buffers[i];
 
                 if (_writePos != 0)
                 {
@@ -278,8 +281,8 @@ namespace NetworkToolkit
 
                 if (buffer.Length > 0)
                 {
-                    buffer.Span.CopyTo(_buffer.AsSpan(_writePos));
-                    _writePos += buffer.Length;
+                    buffer.Span.CopyTo(_buffer);
+                    _writePos = buffer.Length;
                 }
             }
         }

@@ -3,10 +3,8 @@ using System;
 using System.Buffers;
 using System.Buffers.Text;
 using System.Collections.Generic;
-using System.Data;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -59,6 +57,7 @@ namespace NetworkToolkit.Http.Primitives
         private ulong _responseContentBytesRemaining, _responseChunkBytesRemaining;
         private Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>>? _readFunc;
         private HttpConnectionStatus _connectionState;
+        private Exception? _connectionException;
 
         private object _sync => _gatheredWriteBuffer; // this guards the following three fields.
         private IntrusiveLinkedList<Http1Request> _requestCache; // a cache of requests.
@@ -192,6 +191,23 @@ namespace NetworkToolkit.Http.Primitives
             // no active request: start immediately.
             PrepareForNextWriter();
             return new ValueTask<ValueHttpRequest?>(request.GetValueRequest());
+        }
+
+        private async ValueTask<Exception> SetConnectionExceptionAsync(Exception ex, CancellationToken cancellationToken)
+        {
+            Exception? oldEx = Interlocked.CompareExchange(ref _connectionException, ex, null);
+
+            if (oldEx != null)
+            {
+                ex = oldEx;
+            }
+            else
+            {
+                _connectionState = HttpConnectionStatus.Closed;
+                await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return new Exception($"{nameof(Http1Connection)} request failed. See InnerException for details.", ex);
         }
 
         private void ReleaseNextWriter()
@@ -603,30 +619,44 @@ namespace NetworkToolkit.Http.Primitives
 
         internal async ValueTask FlushHeadersAsync(CancellationToken cancellationToken)
         {
-            FlushHeadersHelper(completingRequest: false);
-            await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
-            _writeBuffer.Discard(_writeBuffer.ActiveLength);
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                FlushHeadersHelper(completingRequest: false);
+                await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
+                _writeBuffer.Discard(_writeBuffer.ActiveLength);
+                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         internal async ValueTask CompleteRequestAsync(CancellationToken cancellationToken)
         {
-            FlushHeadersHelper(completingRequest: true);
-            if (_writeBuffer.ActiveLength != 0)
+            try
             {
-                await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
-                _writeBuffer.Discard(_writeBuffer.ActiveLength);
+                FlushHeadersHelper(completingRequest: true);
+                if (_writeBuffer.ActiveLength != 0)
+                {
+                    await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
+                    _writeBuffer.Discard(_writeBuffer.ActiveLength);
+                }
+
+                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                if (_closeConnection)
+                {
+                    await _connection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+                    _connectionState = HttpConnectionStatus.Closing;
+                }
+
+                ReleaseNextWriter();
             }
-
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-            if (_closeConnection)
+            catch (Exception ex)
             {
-                await _connection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
-                _connectionState = HttpConnectionStatus.Closing;
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
-
-            ReleaseNextWriter();
         } 
 
         internal ValueTask WriteContentAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
@@ -639,68 +669,104 @@ namespace NetworkToolkit.Http.Primitives
             return WriteContentAsync(buffer: default, buffers, cancellationToken);
         }
 
-        private ValueTask WriteContentAsync(ReadOnlyMemory<byte> buffer, IReadOnlyList<ReadOnlyMemory<byte>>? buffers, CancellationToken cancellationToken)
+        private async ValueTask WriteContentAsync(ReadOnlyMemory<byte> buffer, IReadOnlyList<ReadOnlyMemory<byte>>? buffers, CancellationToken cancellationToken)
         {
-            switch (_writeState)
+            try
             {
-                case WriteState.RequestWritten:
-                case WriteState.HeadersWritten:
-                    return WriteHeadersAndContentAsync(buffer, buffers, cancellationToken);
-                case WriteState.HeadersFlushed:
-                case WriteState.ContentWritten:
-                    _writeState = WriteState.ContentWritten;
-                    if (!_requestIsChunked)
+                switch (_writeState)
+                {
+                    case WriteState.RequestWritten:
+                    case WriteState.HeadersWritten:
+                        FlushHeadersHelper(completingRequest: false);
+                        _writeState = WriteState.ContentWritten;
+                        break;
+                    case WriteState.HeadersFlushed:
+                        _writeState = WriteState.ContentWritten;
+                        break;
+                    case WriteState.ContentWritten:
+                        break;
+                    default:
+                        Debug.Assert(_writeState == WriteState.TrailingHeadersWritten || _writeState == WriteState.Finished);
+                        throw new InvalidOperationException("Content can not be written after the request has been completed or trailing headers have been written.");
+                }
+
+                ValueTask task;
+
+                if (_requestIsChunked)
+                {
+                    // chunked, write bytes as "{length in hex}\r\n" + buffer + "\r\n"
+
+                    ulong bufferLength = 0;
+
+                    if (buffers != null)
                     {
-                        if (buffers == null) return _stream.WriteAsync(buffer, cancellationToken);
-                        else return _gatheringStream.WriteAsync(buffers, cancellationToken);
+                        for (int i = 0, count = buffers.Count; i < count; ++i)
+                        {
+                            bufferLength += (uint)buffers[i].Length;
+                        }
                     }
-                    else return WriteChunkedContentAsync(buffer, buffers, cancellationToken);
-                default:
-                    Debug.Assert(_writeState == WriteState.TrailingHeadersWritten || _writeState == WriteState.Finished);
-                    return new ValueTask(Task.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException("Content can not be written after the request has been completed or trailing headers have been written."))));
-            }
-        }
+                    else
+                    {
+                        bufferLength = (uint)buffer.Length;
+                    }
 
-        private ValueTask WriteChunkedContentAsync(ReadOnlyMemory<byte> buffer, IReadOnlyList<ReadOnlyMemory<byte>>? buffers, CancellationToken cancellationToken)
-        {
-            ulong bufferLength = 0;
+                    WriteChunkEnvelopeStart(bufferLength);
 
-            if (buffers != null)
-            {
-                for (int i = 0, count = buffers.Count; i < count; ++i)
-                {
-                    bufferLength += (uint)buffers[i].Length;
+                    _gatheredWriteBuffer.Clear();
+                    _gatheredWriteBuffer.Add(_writeBuffer.ActiveMemory);
+                    _writeBuffer.Discard(_writeBuffer.ActiveLength);
+
+                    if (buffers != null)
+                    {
+                        for (int i = 0, count = buffers.Count; i < count; ++i)
+                        {
+                            _gatheredWriteBuffer.Add(buffers[i]);
+                        }
+                    }
+                    else
+                    {
+                        _gatheredWriteBuffer.Add(buffer);
+                    }
+
+                    _gatheredWriteBuffer.Add(s_encodedCRLFMemory);
+
+                    task = _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
                 }
-            }
-            else
-            {
-                bufferLength = (uint)buffer.Length;
-            }
-
-            WriteChunkEnvelopeStart(bufferLength);
-
-            _gatheredWriteBuffer.Clear();
-            _gatheredWriteBuffer.Add(_writeBuffer.ActiveMemory);
-
-            if (buffers != null)
-            {
-                for (int i = 0, count = buffers.Count; i < count; ++i)
+                else if (_writeBuffer.ActiveLength == 0)
                 {
-                    _gatheredWriteBuffer.Add(buffers[i]);
+                    // non-chunked, headers are already flushed, write bytes directly.
+                    if (buffers != null) task = _gatheringStream.WriteAsync(buffers, cancellationToken);
+                    else task = _stream.WriteAsync(buffer, cancellationToken);
                 }
+                else
+                {
+                    // non-chunked, headers need flushing.
+
+                    _gatheredWriteBuffer.Clear();
+                    _gatheredWriteBuffer.Add(_writeBuffer.ActiveMemory);
+                    _writeBuffer.Discard(_writeBuffer.ActiveLength);
+
+                    if (buffers != null)
+                    {
+                        for (int i = 0, count = buffers.Count; i < count; ++i)
+                        {
+                            _gatheredWriteBuffer.Add(buffers[i]);
+                        }
+                    }
+                    else
+                    {
+                        _gatheredWriteBuffer.Add(buffer);
+                    }
+
+                    task = _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
+                }
+
+                await task.ConfigureAwait(false);
             }
-            else
+            catch (Exception ex)
             {
-                _gatheredWriteBuffer.Add(buffer);
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
-
-            _gatheredWriteBuffer.Add(s_encodedCRLFMemory);
-
-            // It looks weird to discard the buffer before sending has completed, but it works fine.
-            // This is done to elide an async state machine allocation that would otherwise be needed to await the write and then discard.
-            _writeBuffer.Discard(_writeBuffer.ActiveLength);
-
-            return _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
         }
 
         private void WriteChunkEnvelopeStart(ulong chunkLength)
@@ -718,42 +784,16 @@ namespace NetworkToolkit.Http.Primitives
             _writeBuffer.Commit(envelopeLength + 2);
         }
 
-        private ValueTask WriteHeadersAndContentAsync(ReadOnlyMemory<byte> buffer, IReadOnlyList<ReadOnlyMemory<byte>>? buffers, CancellationToken cancellationToken)
+        internal async ValueTask FlushContentAsync(CancellationToken cancellationToken)
         {
-            FlushHeadersHelper(completingRequest: false);
-
-            if (!_requestIsChunked)
+            try
             {
-                _gatheredWriteBuffer.Clear();
-                _gatheredWriteBuffer.Add(_writeBuffer.ActiveMemory);
-
-                if (buffers != null)
-                {
-                    for (int i = 0, count = buffers.Count; i != count; ++i)
-                    {
-                        _gatheredWriteBuffer.Add(buffers[i]);
-                    }
-                }
-                else
-                {
-                    _gatheredWriteBuffer.Add(buffer);
-                }
-
-                // It looks weird to discard the buffer before sending has completed, but it works fine.
-                // This is done to elide an async state machine allocation that would otherwise be needed to await the write and then discard.
-                _writeBuffer.Discard(_writeBuffer.ActiveLength);
-
-                return _gatheringStream.WriteAsync(_gatheredWriteBuffer, cancellationToken);
+                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
-            else
+            catch(Exception ex)
             {
-                return WriteChunkedContentAsync(buffer, buffers, cancellationToken);
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        internal ValueTask FlushContentAsync(CancellationToken cancellationToken)
-        {
-            return new ValueTask(_stream.FlushAsync(cancellationToken));
         }
 
         internal ValueTask<HttpReadType> ReadAsync(Http1Request requestStream, CancellationToken cancellationToken)
@@ -764,21 +804,28 @@ namespace NetworkToolkit.Http.Primitives
 
         private async ValueTask<HttpReadType> ReadResponseAsync(Http1Request requestStream, CancellationToken cancellationToken)
         {
-            while (true)
+            try
             {
-                HttpReadType? nodeType = TryReadResponse(requestStream);
-                if (nodeType != null)
+                while (true)
                 {
-                    requestStream.SetCurrentReadType(nodeType.GetValueOrDefault());
-                    return nodeType.GetValueOrDefault();
+                    HttpReadType? nodeType = TryReadResponse(requestStream);
+                    if (nodeType != null)
+                    {
+                        requestStream.SetCurrentReadType(nodeType.GetValueOrDefault());
+                        return nodeType.GetValueOrDefault();
+                    }
+
+                    _readBuffer.EnsureAvailableSpace(1);
+
+                    int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
+                    if (readBytes == 0) throw new Exception("Unexpected EOF");
+
+                    _readBuffer.Commit(readBytes);
                 }
-
-                _readBuffer.EnsureAvailableSpace(1);
-
-                int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
-                if (readBytes == 0) throw new Exception("Unexpected EOF");
-
-                _readBuffer.Commit(readBytes);
+            }
+            catch (Exception ex)
+            {
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -875,27 +922,34 @@ namespace NetworkToolkit.Http.Primitives
                 return;
             }
 
-            int bytesConsumed;
-            while (!ReadHeadersImpl(_readBuffer.ActiveSpan, headersSink, state, out bytesConsumed))
+            try
             {
-                _readBuffer.Discard(bytesConsumed);
-                _readBuffer.EnsureAvailableSpace(1);
-                
-                int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
-
-                if (readBytes == 0)
+                int bytesConsumed;
+                while (!ReadHeadersImpl(_readBuffer.ActiveSpan, headersSink, state, out bytesConsumed))
                 {
-                    throw new Exception("Unexpected EOF.");
+                    _readBuffer.Discard(bytesConsumed);
+                    _readBuffer.EnsureAvailableSpace(1);
+
+                    int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
+
+                    if (readBytes == 0)
+                    {
+                        throw new Exception("Unexpected EOF.");
+                    }
+
+                    _readBuffer.Commit(readBytes);
                 }
+                _readBuffer.Discard(bytesConsumed);
 
-                _readBuffer.Commit(readBytes);
+                _readFunc =
+                    _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
+                    (int)requestStream.StatusCode < 200 ? s_ReadResponse : // Informational status code. more responses coming.
+                    s_ReadToContent; // Move to content.
             }
-            _readBuffer.Discard(bytesConsumed);
-
-            _readFunc =
-                _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
-                (int)requestStream.StatusCode < 200 ? s_ReadResponse : // Informational status code. more responses coming.
-                s_ReadToContent; // Move to content.
+            catch (Exception ex)
+            {
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         partial void ProcessKnownHeaders(ReadOnlySpan<byte> headerName, ReadOnlySpan<byte> headerValue)
@@ -962,8 +1016,14 @@ namespace NetworkToolkit.Http.Primitives
         private async ValueTask<HttpReadType> SkipContentAsync(Http1Request requestStream, CancellationToken cancellationToken)
         {
             byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
-            while ((await ReadContentAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0) ;
-            ArrayPool<byte>.Shared.Return(buffer);
+            try
+            {
+                while ((await ReadContentAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0) ;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
 
             return await _readFunc!(this, requestStream, cancellationToken).ConfigureAwait(false);
         }
@@ -986,103 +1046,117 @@ namespace NetworkToolkit.Http.Primitives
 
         private async ValueTask<int> ReadChunkedContentAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
-            if (_responseChunkBytesRemaining == 0)
+            try
             {
-                while (!TryReadNextChunkSize(out _responseChunkBytesRemaining))
-                {
-                    _readBuffer.EnsureAvailableSpace(1);
-
-                    int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
-                    if (readBytes == 0) throw new Exception("Unexpected EOF, expected chunk envelope.");
-
-                    _readBuffer.Commit(readBytes);
-                }
-
                 if (_responseChunkBytesRemaining == 0)
                 {
-                    // Final chunk. Move to trailing headers.
-                    _readFunc = s_ReadToTrailingHeaders;
-                    return 0;
+                    while (!TryReadNextChunkSize(out _responseChunkBytesRemaining))
+                    {
+                        _readBuffer.EnsureAvailableSpace(1);
+
+                        int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
+                        if (readBytes == 0) throw new Exception("Unexpected EOF, expected chunk envelope.");
+
+                        _readBuffer.Commit(readBytes);
+                    }
+
+                    if (_responseChunkBytesRemaining == 0)
+                    {
+                        // Final chunk. Move to trailing headers.
+                        _readFunc = s_ReadToTrailingHeaders;
+                        return 0;
+                    }
                 }
-            }
 
-            int maxReadLength = (int)Math.Min((uint)buffer.Length, _responseChunkBytesRemaining);
+                int maxReadLength = (int)Math.Min((uint)buffer.Length, _responseChunkBytesRemaining);
 
-            int takeLength;
+                int takeLength;
 
-            int bufferedLength = _readBuffer.ActiveLength;
-            if (bufferedLength != 0)
-            {
-                takeLength = Math.Min(bufferedLength, maxReadLength);
-                if (takeLength != 0)
+                int bufferedLength = _readBuffer.ActiveLength;
+                if (bufferedLength != 0)
                 {
-                    _readBuffer.ActiveSpan.Slice(0, takeLength).CopyTo(buffer.Span);
-                    _readBuffer.Discard(takeLength);
+                    takeLength = Math.Min(bufferedLength, maxReadLength);
+                    if (takeLength != 0)
+                    {
+                        _readBuffer.ActiveSpan.Slice(0, takeLength).CopyTo(buffer.Span);
+                        _readBuffer.Discard(takeLength);
+                    }
                 }
+                else
+                {
+                    takeLength = await _stream.ReadAsync(buffer.Slice(0, maxReadLength), cancellationToken).ConfigureAwait(false);
+                    if (takeLength == 0 && buffer.Length != 0) throw new Exception("Unexpected EOF");
+                }
+
+                ulong takeLengthExtended = (uint)takeLength;
+                _responseChunkBytesRemaining -= takeLengthExtended;
+
+                if (_responseHasContentLength)
+                {
+                    _responseContentBytesRemaining -= takeLengthExtended;
+                }
+
+                return takeLength;
             }
-            else
+            catch (Exception ex)
             {
-                takeLength = await _stream.ReadAsync(buffer.Slice(0, maxReadLength), cancellationToken).ConfigureAwait(false);
-                if (takeLength == 0 && buffer.Length != 0) throw new Exception("Unexpected EOF");
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
-
-            ulong takeLengthExtended = (uint)takeLength;
-            _responseChunkBytesRemaining -= takeLengthExtended;
-
-            if (_responseHasContentLength)
-            {
-                _responseContentBytesRemaining -= takeLengthExtended;
-            }
-
-            return takeLength;
         }
 
         private async ValueTask<int> ReadUnenvelopedContentAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
-            int maxReadLength = buffer.Length;
-
-            if (_responseHasContentLength && _responseContentBytesRemaining <= (uint)maxReadLength)
+            try
             {
-                if (_responseContentBytesRemaining == 0)
+                int maxReadLength = buffer.Length;
+
+                if (_responseHasContentLength && _responseContentBytesRemaining <= (uint)maxReadLength)
                 {
-                    // End of content reached, or empty buffer.
-                    _readFunc = s_ReadToEndOfStream;
-                    return 0;
+                    if (_responseContentBytesRemaining == 0)
+                    {
+                        // End of content reached, or empty buffer.
+                        _readFunc = s_ReadToEndOfStream;
+                        return 0;
+                    }
+
+                    maxReadLength = (int)_responseContentBytesRemaining;
                 }
 
-                maxReadLength = (int)_responseContentBytesRemaining;
-            }
+                Debug.Assert(maxReadLength > 0 || buffer.Length == 0);
 
-            Debug.Assert(maxReadLength > 0 || buffer.Length == 0);
+                int takeLength;
 
-            int takeLength;
-
-            int bufferedLength = _readBuffer.ActiveLength;
-            if (bufferedLength != 0)
-            {
-                takeLength = Math.Min(bufferedLength, maxReadLength);
-                if (takeLength != 0)
+                int bufferedLength = _readBuffer.ActiveLength;
+                if (bufferedLength != 0)
                 {
-                    _readBuffer.ActiveSpan.Slice(0, takeLength).CopyTo(buffer.Span);
-                    _readBuffer.Discard(takeLength);
+                    takeLength = Math.Min(bufferedLength, maxReadLength);
+                    if (takeLength != 0)
+                    {
+                        _readBuffer.ActiveSpan.Slice(0, takeLength).CopyTo(buffer.Span);
+                        _readBuffer.Discard(takeLength);
+                    }
                 }
-            }
-            else
-            {
-                takeLength = await _stream.ReadAsync(buffer.Slice(0, maxReadLength), cancellationToken).ConfigureAwait(false);
-                if (takeLength == 0 && buffer.Length != 0)
+                else
                 {
-                    if (_responseHasContentLength) throw new Exception("Unexpected EOF");
-                    _readFunc = s_ReadToEndOfStream;
+                    takeLength = await _stream.ReadAsync(buffer.Slice(0, maxReadLength), cancellationToken).ConfigureAwait(false);
+                    if (takeLength == 0 && buffer.Length != 0)
+                    {
+                        if (_responseHasContentLength) throw new Exception("Unexpected EOF");
+                        _readFunc = s_ReadToEndOfStream;
+                    }
                 }
-            }
 
-            if (_responseHasContentLength)
+                if (_responseHasContentLength)
+                {
+                    _responseContentBytesRemaining -= (uint)takeLength;
+                }
+
+                return takeLength;
+            }
+            catch (Exception ex)
             {
-                _responseContentBytesRemaining -= (uint)takeLength;
+                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
             }
-
-            return takeLength;
         }
 
         private bool TryReadNextChunkSize(out ulong chunkSize)

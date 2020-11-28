@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -271,9 +272,47 @@ namespace NetworkToolkit.Tests.Http
         /// </summary>
         internal bool SupportsMultiStreamConcurrentTests => Version.Major >= 2;
 
+        internal virtual bool UseSsl => false;
         internal abstract HttpPrimitiveVersion Version { get; }
 
-        internal virtual ConnectionFactory CreateConnectionFactory() => new MemoryConnectionFactory();
+        internal virtual ConnectionFactory CreateConnectionFactory()
+        {
+            ConnectionFactory factory = new MemoryConnectionFactory();
+            if (UseSsl) factory = new SslConnectionFactory(factory);
+            return factory;
+        }
+
+        internal virtual IConnectionProperties? CreateConnectProperties()
+        {
+            if (!UseSsl)
+            {
+                return null;
+            }
+
+            var properties = new ConnectionProperties();
+            properties.Add(SslConnectionFactory.SslClientAuthenticationOptionsPropertyKey, new SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = delegate { return true; },
+                TargetHost = "localhost"
+            });
+            return properties;
+        }
+
+        internal virtual IConnectionProperties? CreateListenerProperties()
+        {
+            if (!UseSsl)
+            {
+                return null;
+            }
+            
+            var properties = new ConnectionProperties();
+            properties.Add(SslConnectionFactory.SslServerAuthenticationOptionsPropertyKey, new SslServerAuthenticationOptions
+            {
+                ServerCertificate = TestCertificates.GetSelfSigned13ServerCertificate()
+            });
+            return properties;
+        }
+
         internal abstract Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory);
         internal abstract Task<HttpConnection> CreateTestClientAsync(ConnectionFactory connectionFactory, EndPoint endPoint);
 
