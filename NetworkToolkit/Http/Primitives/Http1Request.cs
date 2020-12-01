@@ -169,7 +169,7 @@ namespace NetworkToolkit.Http.Primitives
         protected internal override ValueTask ReadHeadersAsync(int version, IHttpHeadersSink headersSink, object? state, CancellationToken cancellationToken = default)
         {
             if (IsDisposed(version, out ValueTask task)) return task;
-            return _connection.ReadHeadersAsync(this, headersSink, state, cancellationToken);
+            return _connection.ReadHeadersAsync(headersSink, state, cancellationToken);
         }
 
         protected internal override ValueTask<int> ReadContentAsync(int version, Memory<byte> buffer, CancellationToken cancellationToken = default)

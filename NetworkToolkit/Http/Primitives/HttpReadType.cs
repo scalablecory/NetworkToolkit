@@ -14,7 +14,14 @@
         /// <summary>
         /// HTTP response.
         /// <see cref="ValueHttpRequest.StatusCode"/> and <see cref="ValueHttpRequest.Version"/> are now valid.
-        /// <see cref="Response"/> can be received more than once, for informational responses.
+        /// <see cref="InformationalResponse"/> can be received zero or more times.
+        /// </summary>
+        InformationalResponse,
+
+        /// <summary>
+        /// HTTP response.
+        /// <see cref="ValueHttpRequest.StatusCode"/> and <see cref="ValueHttpRequest.Version"/> are now valid.
+        /// <see cref="Response"/> will only be returned for a final response, not informational responses.
         /// </summary>
         Response,
 

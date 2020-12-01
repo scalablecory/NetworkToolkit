@@ -35,29 +35,35 @@ namespace NetworkToolkit.Http.Primitives
         private static ReadOnlySpan<byte> s_EncodedConnectionCloseValue => new byte[] { (byte)'c', (byte)'l', (byte)'o', (byte)'s', (byte)'e' };
         private static ReadOnlySpan<byte> s_EncodedConnectionKeepAliveValue => new byte[] { (byte)'k', (byte)'e', (byte)'e', (byte)'p', (byte)'-', (byte)'a', (byte)'l', (byte)'i', (byte)'v', (byte)'e' };
 
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadResponse = (c, r, t) => c.ReadResponseAsync(r, t);
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToHeaders = (c, r, t) => { c._readFunc = s_SkipHeaders; r.SetCurrentReadType(HttpReadType.Headers); return new ValueTask<HttpReadType>(HttpReadType.Headers); };
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipHeaders = (c, r, t) => c.SkipHeadersAsync(r, t);
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToContent = (c, r, t) => c.ReadToContentAsync(r);
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipContent = (c, r, t) => c.SkipContentAsync(r, t);
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToTrailingHeaders = (c, r, t) => { c._readFunc = s_SkipTrailingHeaders; r.SetCurrentReadType(HttpReadType.TrailingHeaders); return new ValueTask<HttpReadType>(HttpReadType.TrailingHeaders); };
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_SkipTrailingHeaders = (c, r, t) => c.SkipHeadersAsync(r, t);
-        private static readonly Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>> s_ReadToEndOfStream = (c, r, t) => { r.SetCurrentReadType(HttpReadType.EndOfStream); return new ValueTask<HttpReadType>(HttpReadType.EndOfStream); };
-
         internal readonly HttpPrimitiveVersion _version;
         internal readonly Connection _connection;
         internal readonly Stream _stream;
         internal readonly IGatheringStream _gatheringStream;
         internal VectorArrayBuffer _readBuffer;
         internal ArrayBuffer _writeBuffer;
-        private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new List<ReadOnlyMemory<byte>>(3);
+        private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new(3);
         private bool _requestIsChunked, _responseHasContentLength, _responseIsChunked, _readingFirstResponseChunk;
         private volatile bool _closeConnection;
         private WriteState _writeState;
+        private ReadState _readState;
+        private ReadHeadersState _readHeadersState;
         private ulong _responseContentBytesRemaining, _responseChunkBytesRemaining;
-        private Func<Http1Connection, Http1Request, CancellationToken, ValueTask<HttpReadType>>? _readFunc;
         private HttpConnectionStatus _connectionState;
         private Exception? _connectionException;
+
+        private readonly ResettableValueTaskSource<HttpReadType> _readTaskSource = new();
+        private readonly ResettableValueTaskSource<int> _readHeadersTaskSource = new();
+        private ConfiguredValueTaskAwaitable<int>.ConfiguredValueTaskAwaiter _readBytesAwaitable;
+        private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _readAwaitable;
+        private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _readHeadersAwaitable;
+        private ConfiguredValueTaskAwaitable<Exception>.ConfiguredValueTaskAwaiter _setExceptionAwaitable;
+        private byte[]? _drainContentBuffer;
+        private Http1Request? _readRequest;
+        private CancellationToken _readToken;
+        private IHttpHeadersSink? _headersSink;
+        private object? _headersSinkState;
+        private readonly Action _doReadFunc;
+        private readonly Action _doReadHeadersFunc;
 
         private object _sync => _gatheredWriteBuffer; // this guards the following three fields.
         private IntrusiveLinkedList<Http1Request> _requestCache; // a cache of requests.
@@ -73,6 +79,32 @@ namespace NetworkToolkit.Http.Primitives
             ContentWritten,
             TrailingHeadersWritten,
             Finished
+        }
+
+        private enum ReadState : byte
+        {
+            ReadToResponse,
+            OnResponseBytesReceived,
+            ReadToHeaders,
+            SkipHeaders,
+            OnHeadersRead,
+            ReadToContent,
+            SkipContent,
+            OnContentReceived,
+            ReadToTrailingHeaders,
+            SkipTrailingHeaders,
+            OnTrailingHeadersRead,
+            EndOfStream,
+            OnException,
+            RethrowException
+        }
+
+        private enum ReadHeadersState : byte
+        {
+            ReadHeaders,
+            OnHeaderBytesComplete,
+            OnException,
+            RethrowException
         }
 
         /// <inheritdoc/>
@@ -109,6 +141,8 @@ namespace NetworkToolkit.Http.Primitives
                 gatheringStream = bufferingStream;
             }
 
+            _doReadFunc = DoRead;
+            _doReadHeadersFunc = DoReadHeaders;
             _version = version;
             _connection = connection;
             _stream = stream;
@@ -193,22 +227,24 @@ namespace NetworkToolkit.Http.Primitives
             return new ValueTask<ValueHttpRequest?>(request.GetValueRequest());
         }
 
-        private async ValueTask<Exception> SetConnectionExceptionAsync(Exception ex, CancellationToken cancellationToken)
+        private async ValueTask SetConnectionExceptionAsync(Exception ex, CancellationToken cancellationToken)
         {
-            Exception? oldEx = Interlocked.CompareExchange(ref _connectionException, ex, null);
-
-            if (oldEx != null)
-            {
-                ex = oldEx;
-            }
-            else
+            if(Interlocked.CompareExchange(ref _connectionException, ex, null) == null)
             {
                 _connectionState = HttpConnectionStatus.Closed;
-                await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // do nothing. dispose will be retried when user disposes connection.
+                }
             }
-
-            return new Exception($"{nameof(Http1Connection)} request failed. See InnerException for details.", ex);
         }
+
+        private Exception CreateRethrowException() =>
+            new Exception($"{nameof(Http1Connection)} request failed. See InnerException for details.", _connectionException);
 
         private void ReleaseNextWriter()
         {
@@ -268,7 +304,7 @@ namespace NetworkToolkit.Http.Primitives
             _responseHasContentLength = false;
             _responseIsChunked = false;
             _readingFirstResponseChunk = false;
-            _readFunc = s_ReadResponse;
+            _readState = ReadState.ReadToResponse;
         }
 
         internal void DrainFailed()
@@ -628,7 +664,8 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         }
 
@@ -655,7 +692,8 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         } 
 
@@ -765,7 +803,8 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         }
 
@@ -792,48 +831,201 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch(Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         }
 
         internal ValueTask<HttpReadType> ReadAsync(Http1Request requestStream, CancellationToken cancellationToken)
         {
-            // TODO: if we are not the current reader, wait for that to complete.
-            return _readFunc!(this, requestStream, cancellationToken);
+            _readTaskSource.Reset();
+            _readRequest = requestStream;
+            _readToken = cancellationToken;
+
+            DoRead();
+            return _readTaskSource.Task;
         }
 
-        private async ValueTask<HttpReadType> ReadResponseAsync(Http1Request requestStream, CancellationToken cancellationToken)
+        void DoRead()
         {
             try
             {
-                while (true)
+                int readBytes;
+
+                switch (_readState)
                 {
-                    HttpReadType? nodeType = TryReadResponse(requestStream);
-                    if (nodeType != null)
-                    {
-                        requestStream.SetCurrentReadType(nodeType.GetValueOrDefault());
-                        return nodeType.GetValueOrDefault();
-                    }
+                    case ReadState.ReadToResponse:
+                        if (!TryReadResponse())
+                        {
+                            _readBuffer.EnsureAvailableSpace(1);
 
-                    _readBuffer.EnsureAvailableSpace(1);
+                            _readBytesAwaitable = _stream.ReadAsync(_readBuffer.AvailableMemory, _readToken).ConfigureAwait(false).GetAwaiter();
 
-                    int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
-                    if (readBytes == 0) throw new Exception("Unexpected EOF");
+                            if (_readBytesAwaitable.IsCompleted)
+                            {
+                                goto case ReadState.OnResponseBytesReceived;
+                            }
 
-                    _readBuffer.Commit(readBytes);
+                            _readState = ReadState.OnResponseBytesReceived;
+                            _readBytesAwaitable.UnsafeOnCompleted(_doReadFunc);
+                            return;
+                        }
+
+                        HttpReadType result;
+
+                        Debug.Assert(_readRequest != null);
+                        if ((int)_readRequest.StatusCode >= 200)
+                        {
+                            // reset values from previous requests.
+                            _responseContentBytesRemaining = 0;
+                            _responseChunkBytesRemaining = 0;
+                            _responseHasContentLength = false;
+                            _responseIsChunked = false;
+                            _readingFirstResponseChunk = true;
+
+                            result = HttpReadType.Response;
+                        }
+                        else
+                        {
+                            result = HttpReadType.InformationalResponse;
+                        }
+                        _readState = ReadState.ReadToHeaders;
+                        CompleteRead(result);
+                        return;
+                    case ReadState.OnResponseBytesReceived:
+                        readBytes = _readBytesAwaitable.GetResult();
+                        if (readBytes == 0) throw new Exception("Unexpected EOF");
+                        _readBuffer.Commit(readBytes);
+
+                        goto case ReadState.ReadToResponse;
+                    case ReadState.ReadToHeaders:
+                        _readState = ReadState.SkipHeaders;
+                        CompleteRead(HttpReadType.Headers);
+                        return;
+                    case ReadState.SkipHeaders:
+                        _readState = ReadState.OnHeadersRead;
+                        _readAwaitable = ReadHeadersAsync(NullHttpHeaderSink.Instance, state: null, _readToken).ConfigureAwait(false).GetAwaiter();
+                        if (!_readAwaitable.IsCompleted)
+                        {
+                            _readAwaitable.UnsafeOnCompleted(_doReadFunc);
+                            return;
+                        }
+                        goto case ReadState.OnHeadersRead;
+                    case ReadState.OnHeadersRead:
+                        _readAwaitable.GetResult();
+                        goto case ReadState.ReadToContent;
+                    case ReadState.ReadToContent:
+                        if (_readingFirstResponseChunk == false)
+                        {
+                            // last header of chunked encoding trailers.
+                            goto case ReadState.EndOfStream;
+                        }
+
+                        Debug.Assert(_readRequest != null);
+                        if ((int)_readRequest.StatusCode < 200)
+                        {
+                            // informational status code. more responses coming.
+                            goto case ReadState.ReadToResponse;
+                        }
+
+                        // move to content.
+                        _readState = ReadState.SkipContent;
+                        CompleteRead(HttpReadType.Content);
+                        return;
+                    case ReadState.SkipContent:
+                        _drainContentBuffer ??= ArrayPool<byte>.Shared.Rent(8192);
+
+                        _readState = ReadState.OnContentReceived;
+                        _readBytesAwaitable = ReadContentAsync(_drainContentBuffer, _readToken).ConfigureAwait(false).GetAwaiter();
+                        if (!_readBytesAwaitable.IsCompleted)
+                        {
+                            _readBytesAwaitable.UnsafeOnCompleted(_doReadFunc);
+                            return;
+                        }
+                        goto case ReadState.OnContentReceived;
+                    case ReadState.OnContentReceived:
+                        Debug.Assert(_drainContentBuffer != null);
+
+                        try
+                        {
+                            readBytes = _readBytesAwaitable.GetResult();
+                        }
+                        catch
+                        {
+                            ArrayPool<byte>.Shared.Return(_drainContentBuffer);
+                            _drainContentBuffer = null;
+                            throw;
+                        }
+
+                        if (readBytes != 0)
+                        {
+                            goto case ReadState.SkipContent;
+                        }
+
+                        ArrayPool<byte>.Shared.Return(_drainContentBuffer);
+                        _drainContentBuffer = null;
+
+                        goto case ReadState.ReadToTrailingHeaders;
+                    case ReadState.ReadToTrailingHeaders:
+                        if (!_responseIsChunked)
+                        {
+                            goto case ReadState.EndOfStream;
+                        }
+                        else
+                        {
+                            _readState = ReadState.SkipTrailingHeaders;
+                            CompleteRead(HttpReadType.TrailingHeaders);
+                            return;
+                        }
+                    case ReadState.SkipTrailingHeaders:
+                        _readState = ReadState.OnTrailingHeadersRead;
+                        _readAwaitable = ReadHeadersAsync(NullHttpHeaderSink.Instance, state: null, _readToken).ConfigureAwait(false).GetAwaiter();
+                        if (!_readAwaitable.IsCompleted)
+                        {
+                            _readAwaitable.UnsafeOnCompleted(_doReadFunc);
+                            return;
+                        }
+                        goto case ReadState.OnTrailingHeadersRead;
+                    case ReadState.OnTrailingHeadersRead:
+                        _readAwaitable.GetResult();
+                        goto case ReadState.EndOfStream;
+                    case ReadState.EndOfStream:
+                        _readState = ReadState.EndOfStream;
+                        CompleteRead(HttpReadType.EndOfStream);
+                        return;
+                    case ReadState.OnException:
+                        _readState = ReadState.RethrowException;
+                        _readAwaitable.GetResult();
+                        goto case ReadState.RethrowException;
+                    case ReadState.RethrowException:
+                        _readTaskSource.SetException(ExceptionDispatchInfo.SetCurrentStackTrace(CreateRethrowException()));
+                        return;
+                    default:
+                        Debug.Fail("Unknown read state.");
+                        return;
                 }
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                _readState = ReadState.OnException;
+                _readAwaitable = SetConnectionExceptionAsync(ex, _readToken).ConfigureAwait(false).GetAwaiter();
+                _readAwaitable.UnsafeOnCompleted(_doReadFunc);
             }
         }
 
-        private HttpReadType? TryReadResponse(Http1Request requestStream)
+        private void CompleteRead(HttpReadType readType)
+        {
+            Debug.Assert(_readRequest != null);
+            _readRequest.SetCurrentReadType(readType);
+            _readRequest = null;
+            _readTaskSource.SetResult(readType);
+        }
+
+        private bool TryReadResponse()
         {
             if (_readBuffer.ActiveLength == 0)
             {
-                return null;
+                return false;
             }
 
             Version version;
@@ -868,7 +1060,7 @@ namespace NetworkToolkit.Http.Primitives
         parseStatusCode:
             if (buffer.Length < 4)
             {
-                return null;
+                return false;
             }
 
             uint s100, s10, s1;
@@ -883,72 +1075,108 @@ namespace NetworkToolkit.Http.Primitives
             int idx = buffer.IndexOf((byte)'\n');
             if (idx == -1)
             {
-                return null;
+                return false;
             }
 
             buffer = buffer.Slice(idx + 1);
             _readBuffer.Discard(_readBuffer.ActiveLength - buffer.Length);
 
-            requestStream.SetCurrentResponseLine(version, statusCode);
+            Debug.Assert(_readRequest != null);
+            _readRequest.SetCurrentResponseLine(version, statusCode);
 
-            // reset values from previous requests.
-            _responseContentBytesRemaining = 0;
-            _responseChunkBytesRemaining = 0;
-            _responseHasContentLength = false;
-            _responseIsChunked = false;
-            _readingFirstResponseChunk = true;
-
-            _readFunc = s_ReadToHeaders;
-            return HttpReadType.Response;
+            return true;
 
         unknownVersion:
             idx = buffer.IndexOf((byte)' ');
-            if (idx == -1) return null;
+            if (idx == -1) return false;
             version = System.Net.HttpVersion.Unknown;
             buffer = buffer.Slice(idx + 1);
             goto parseStatusCode;
         }
 
-        private async ValueTask<HttpReadType> SkipHeadersAsync(Http1Request requestStream, CancellationToken cancellationToken)
+        internal ValueTask ReadHeadersAsync(IHttpHeadersSink headersSink, object? state, CancellationToken cancellationToken = default)
         {
-            await ReadHeadersAsync(requestStream, NullHttpHeaderSink.Instance, state: null, cancellationToken).ConfigureAwait(false);
-            return await _readFunc!(this, requestStream, cancellationToken).ConfigureAwait(false);
-        }
-
-        internal async ValueTask ReadHeadersAsync(Http1Request requestStream, IHttpHeadersSink headersSink, object? state, CancellationToken cancellationToken = default)
-        {
-            if (_readFunc != s_SkipHeaders && _readFunc != s_SkipTrailingHeaders)
+            switch (_readState)
             {
-                return;
+                case ReadState.SkipHeaders:
+                case ReadState.OnHeadersRead:
+                case ReadState.SkipTrailingHeaders:
+                case ReadState.OnTrailingHeadersRead:
+                    break;
+                default:
+                    return default;
             }
 
+            _readHeadersTaskSource.Reset();
+            _headersSink = headersSink;
+            _headersSinkState = state;
+            _readToken = cancellationToken;
+            DoReadHeaders();
+            return _readHeadersTaskSource.UntypedTask;
+        }
+
+        private void DoReadHeaders()
+        {
             try
             {
-                int bytesConsumed;
-                while (!ReadHeadersImpl(_readBuffer.ActiveSpan, headersSink, state, out bytesConsumed))
+                switch (_readHeadersState)
                 {
-                    _readBuffer.Discard(bytesConsumed);
-                    _readBuffer.EnsureAvailableSpace(1);
+                    case ReadHeadersState.ReadHeaders:
+                        Debug.Assert(_headersSink != null);
 
-                    int readBytes = await _stream.ReadAsync(_readBuffer.AvailableMemory, cancellationToken).ConfigureAwait(false);
+                        int bytesConsumed;
+                        if (!ReadHeadersImpl(_readBuffer.ActiveSpan, _headersSink, _headersSinkState, out bytesConsumed))
+                        {
+                            _readBuffer.Discard(bytesConsumed);
+                            _readBuffer.EnsureAvailableSpace(1);
 
-                    if (readBytes == 0)
-                    {
-                        throw new Exception("Unexpected EOF.");
-                    }
+                            _readBytesAwaitable = _stream.ReadAsync(_readBuffer.AvailableMemory, _readToken).ConfigureAwait(false).GetAwaiter();
+                            if (!_readBytesAwaitable.IsCompleted)
+                            {
+                                _readHeadersState = ReadHeadersState.OnHeaderBytesComplete;
+                                _readBytesAwaitable.UnsafeOnCompleted(_doReadHeadersFunc);
+                                return;
+                            }
 
-                    _readBuffer.Commit(readBytes);
+                            goto case ReadHeadersState.OnHeaderBytesComplete;
+                        }
+
+                        _readBuffer.Discard(bytesConsumed);
+
+                        if (_readState == ReadState.SkipHeaders)
+                        {
+                            _readState = ReadState.ReadToContent;
+                        }
+                        else if (_readState == ReadState.SkipTrailingHeaders)
+                        {
+                            _readState = ReadState.EndOfStream;
+                        }
+                        _readHeadersTaskSource.SetResult(0);
+                        return;
+                    case ReadHeadersState.OnHeaderBytesComplete:
+                        int bytesRead = _readBytesAwaitable.GetResult();
+                        if (bytesRead == 0) throw new Exception("Unexpected EOF.");
+
+                        _readBuffer.Commit(bytesRead);
+                        goto case ReadHeadersState.ReadHeaders;
+                    case ReadHeadersState.OnException:
+                        _readState = ReadState.RethrowException;
+                        _readHeadersAwaitable.GetResult();
+                        goto case ReadHeadersState.RethrowException;
+                    case ReadHeadersState.RethrowException:
+                        _readHeadersTaskSource.SetException(ExceptionDispatchInfo.SetCurrentStackTrace(CreateRethrowException()));
+                        return;
+                    default:
+                        Debug.Fail("Unknown read state.");
+                        return;
+
                 }
-                _readBuffer.Discard(bytesConsumed);
-
-                _readFunc =
-                    _readingFirstResponseChunk == false ? s_ReadToEndOfStream : // Last header of chunked encoding.
-                    (int)requestStream.StatusCode < 200 ? s_ReadResponse : // Informational status code. more responses coming.
-                    s_ReadToContent; // Move to content.
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                _readHeadersState = ReadHeadersState.OnException;
+                _readHeadersAwaitable = SetConnectionExceptionAsync(ex, _readToken).ConfigureAwait(false).GetAwaiter();
+                _readHeadersAwaitable.UnsafeOnCompleted(_doReadHeadersFunc);
             }
         }
 
@@ -995,42 +1223,9 @@ namespace NetworkToolkit.Http.Primitives
             return true;
         }
 
-        private ValueTask<HttpReadType> ReadToContentAsync(Http1Request requestStream)
-        {
-            HttpReadType readType;
-
-            if (_responseIsChunked || !_responseHasContentLength || _responseContentBytesRemaining != 0)
-            {
-                readType = HttpReadType.Content;
-                _readFunc = s_SkipContent;
-            }
-            else
-            {
-                readType = HttpReadType.EndOfStream;
-            }
-
-            requestStream.SetCurrentReadType(readType);
-            return new ValueTask<HttpReadType>(readType);
-        }
-
-        private async ValueTask<HttpReadType> SkipContentAsync(Http1Request requestStream, CancellationToken cancellationToken)
-        {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
-            try
-            {
-                while ((await ReadContentAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0) ;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-
-            return await _readFunc!(this, requestStream, cancellationToken).ConfigureAwait(false);
-        }
-
         internal ValueTask<int> ReadContentAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
-            if (_readFunc != s_SkipContent)
+            if (_readState != ReadState.SkipContent && _readState != ReadState.OnResponseBytesReceived)
             {
                 return new ValueTask<int>(0);
             }
@@ -1062,8 +1257,11 @@ namespace NetworkToolkit.Http.Primitives
 
                     if (_responseChunkBytesRemaining == 0)
                     {
-                        // Final chunk. Move to trailing headers.
-                        _readFunc = s_ReadToTrailingHeaders;
+                        // Final chunk. Move to trailing headers, if the user called this.
+                        if(_readState != ReadState.OnContentReceived)
+                        {
+                            _readState = ReadState.ReadToTrailingHeaders;
+                        }
                         return 0;
                     }
                 }
@@ -1100,7 +1298,8 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         }
 
@@ -1114,8 +1313,11 @@ namespace NetworkToolkit.Http.Primitives
                 {
                     if (_responseContentBytesRemaining == 0)
                     {
-                        // End of content reached, or empty buffer.
-                        _readFunc = s_ReadToEndOfStream;
+                        // End of content reached, or empty buffer. move to end of stream if user called.
+                        if (_readState != ReadState.OnContentReceived)
+                        {
+                            _readState = ReadState.EndOfStream;
+                        }
                         return 0;
                     }
 
@@ -1142,7 +1344,11 @@ namespace NetworkToolkit.Http.Primitives
                     if (takeLength == 0 && buffer.Length != 0)
                     {
                         if (_responseHasContentLength) throw new Exception("Unexpected EOF");
-                        _readFunc = s_ReadToEndOfStream;
+
+                        if (_readState != ReadState.OnContentReceived)
+                        {
+                            _readState = ReadState.EndOfStream;
+                        }
                     }
                 }
 
@@ -1155,7 +1361,8 @@ namespace NetworkToolkit.Http.Primitives
             }
             catch (Exception ex)
             {
-                throw await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                await SetConnectionExceptionAsync(ex, cancellationToken).ConfigureAwait(false);
+                throw CreateRethrowException();
             }
         }
 
