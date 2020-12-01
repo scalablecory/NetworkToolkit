@@ -262,23 +262,16 @@ namespace NetworkToolkit.Tests.Http
             new List<string> { "foo", "barbar", "bazbazbaz" }
         };
 
-        /// <summary>
-        /// If true, more than one stream can be opened on a single connection.
-        /// </summary>
-        internal bool SupportsMultiStreamTests => Version != HttpPrimitiveVersion.Version10;
-
-        /// <summary>
-        /// If true, the current <see cref="Version"/> supports concurrent duplex streams.
-        /// </summary>
-        internal bool SupportsMultiStreamConcurrentTests => Version.Major >= 2;
-
         internal virtual bool UseSsl => false;
+        internal virtual bool Trickle => false;
+        internal virtual bool TrickleForceAsync => false;
         internal abstract HttpPrimitiveVersion Version { get; }
 
         internal virtual ConnectionFactory CreateConnectionFactory()
         {
             ConnectionFactory factory = new MemoryConnectionFactory();
             if (UseSsl) factory = new SslConnectionFactory(factory);
+            if (Trickle) factory = new TricklingConnectionFactory(factory) { ForceAsync = TrickleForceAsync };
             return factory;
         }
 

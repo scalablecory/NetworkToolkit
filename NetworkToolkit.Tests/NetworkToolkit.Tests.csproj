@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\NetworkToolKit\StreamExtensions.cs" />
     <Compile Include="..\NetworkToolKit\TaskToApm.cs" />
     <Compile Include="..\NetworkToolKit\Tools.cs" />
   </ItemGroup>

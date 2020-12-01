@@ -124,13 +124,13 @@ namespace NetworkToolkit.Http.Primitives
         protected internal override ValueTask WriteContentAsync(int version, ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (IsDisposed(version, out ValueTask task)) return task;
-            return _connection.WriteContentAsync(buffer, cancellationToken);
+            return _connection.WriteContentAsync(buffer, buffers: null, cancellationToken);
         }
 
         protected internal override ValueTask WriteContentAsync(int version, IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
         {
             if (IsDisposed(version, out ValueTask task)) return task;
-            return _connection.WriteContentAsync(buffers, cancellationToken);
+            return _connection.WriteContentAsync(buffer: default, buffers, cancellationToken);
         }
 
         protected internal override ValueTask FlushContentAsync(int version, CancellationToken cancellationToken = default)

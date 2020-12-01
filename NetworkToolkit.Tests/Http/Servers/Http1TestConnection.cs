@@ -106,6 +106,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             {
                 if (!await FillReadBufferAsync().ConfigureAwait(false))
                 {
+                    this.ToString();
                     throw new Exception("Unexpected end of stream. Expected CRLF.");
                 }
             }

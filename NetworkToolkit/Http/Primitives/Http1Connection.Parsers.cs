@@ -1,6 +1,5 @@
 ﻿using NetworkToolkit.Http.Primitives;
 using System;
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -24,8 +23,6 @@ namespace NetworkToolkitInternal.Http.Primitives
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private bool ReadHeadersImpl(Span<byte> buffer, IHttpHeadersSink headersSink, object? state, out int bytesConsumed)
         {
-            Debug.Assert(buffer.Length != 0);
-
             if (Avx2.IsSupported) return ReadHeadersAvx2(buffer, headersSink, state, out bytesConsumed);
             return ReadHeadersPortable(buffer, headersSink, state, out bytesConsumed);
         }
@@ -108,6 +105,12 @@ namespace NetworkToolkitInternal.Http.Primitives
         /// </remarks>
         internal unsafe bool ReadHeadersAvx2(Span<byte> buffer, IHttpHeadersSink headersSink, object? state, out int bytesConsumed)
         {
+            if (buffer.Length == 0)
+            {
+                bytesConsumed = 0;
+                return false;
+            }
+
             Vector256<byte> maskCol = Vector256.Create((byte)':');
             Vector256<byte> maskLF = Vector256.Create((byte)'\n');
 

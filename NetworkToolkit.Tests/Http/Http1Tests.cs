@@ -80,6 +80,12 @@ namespace NetworkToolkit.Tests.Http
         [Fact]
         public async Task Pipelining_PausedReads_Success()
         {
+            if (TrickleForceAsync)
+            {
+                // This test depends on synchronous completion of reads, so will not work when async completion is forced.
+                return;
+            }
+
             const int PipelineLength = 10;
 
             using var semaphore = new SemaphoreSlim(0);
@@ -198,5 +204,15 @@ namespace NetworkToolkit.Tests.Http
     public class Http1SslTests : Http1Tests
     {
         internal override bool UseSsl => true;
+    }
+
+    public class Http1TrickleTests : Http1Tests
+    {
+        internal override bool Trickle => true;
+    }
+
+    public class Http1TrickleAsyncTests : Http1TrickleTests
+    {
+        internal override bool TrickleForceAsync => true;
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -6,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace NetworkToolkit.Tests
 {
-    internal abstract class TestStreamBase : Stream
+    internal abstract class TestStreamBase : Stream, IGatheringStream, ICancellableAsyncDisposable
     {
 
         public override bool CanRead => false;
@@ -16,6 +17,14 @@ namespace NetworkToolkit.Tests
         public override bool CanSeek => false;
         public override long Length => throw new InvalidOperationException();
         public override long Position { get => throw new InvalidOperationException(); set => throw new InvalidOperationException(); }
+
+        public override ValueTask DisposeAsync() =>
+            DisposeAsync(CancellationToken.None);
+
+        public virtual ValueTask DisposeAsync(CancellationToken cancellationToken)
+        {
+            return default;
+        }
 
         public override void Flush() => throw new NotImplementedException();
 
@@ -43,6 +52,14 @@ namespace NetworkToolkit.Tests
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
+        }
+
+        public virtual async ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
+        {
+            for (int i = 0, count = buffers.Count; i != count; ++i)
+            {
+                await WriteAsync(buffers[i], cancellationToken).ConfigureAwait(false);
+            }
         }
 
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
