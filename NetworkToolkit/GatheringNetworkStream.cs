@@ -13,9 +13,9 @@ using System.Threading.Tasks;
 namespace NetworkToolkit
 {
     /// <summary>
-    /// A <see cref="NetworkStream"/> that supports gathered writes via <see cref="IGatheringStream"/>.
+    /// A <see cref="NetworkStream"/> that supports gathered writes via <see cref="IGatheringStream"/> and socket shutdown via <see cref="ICompletableStream"/>.
     /// </summary>
-    public class GatheringNetworkStream : NetworkStream, IGatheringStream
+    public class GatheringNetworkStream : NetworkStream, IGatheringStream, ICompletableStream
     {
         private EventArgs? _gatheredEventArgs;
         private static Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>? s_sendAsyncWithCancellation;
@@ -31,6 +31,12 @@ namespace NetworkToolkit
                     Delegate.CreateDelegate(typeof(Func<Socket, SocketAsyncEventArgs, CancellationToken, bool>), firstArgument: null, sendAsync);
             }
         }
+
+        /// <inheritdoc/>
+        public bool CanWriteGathered => true;
+
+        /// <inheritdoc/>
+        public bool CanCompleteWrites => true;
 
         /// <summary>
         /// Instantiates a new <see cref="GatheringNetworkStream"/> over a <see cref="Socket"/>.
@@ -86,6 +92,20 @@ namespace NetworkToolkit
             for (int i = 0, count = buffers.Count; i != count; ++i)
             {
                 await WriteAsync(buffers[i], cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <inheritdoc/>
+        public ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                Socket.Shutdown(SocketShutdown.Send);
+                return default;
+            }
+            catch (Exception ex)
+            {
+                return ValueTask.FromException(ex);
             }
         }
 

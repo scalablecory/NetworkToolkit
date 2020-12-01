@@ -1,8 +1,8 @@
 # NetworkToolkit
 
-This project contains networking primitives for use with .NET. It can be obtained from [NuGet](https://www.nuget.org/packages/NetworkToolkit/).
+This project contains networking primitives for use with .NET. It can be obtained from NuGet. [![Nuget](https://img.shields.io/nuget/v/NetworkToolkit)](https://www.nuget.org/packages/NetworkToolkit)
 
-This is a bit of a prototyping playground right now and APIs may not be stable.
+This is a bit of a prototyping playground right now and APIs will not be perfectly stable.
 
 ## HTTP Primitives
 
@@ -14,23 +14,23 @@ In the great majority of cases, `HttpClient` will be fast enough. Generally I/O 
 
 Benchmarks are incomplete, so this should not be viewed as an exhaustive comparison:
 
-|            Method | RequestHeaders | ResponseBytes |       Mean |     Error |     StdDev |     Median | Ratio | RatioSD |
-|------------------ |--------------- |-------------- |-----------:|----------:|-----------:|-----------:|------:|--------:|
-|         Primitive |        Minimal |       Minimal |   6.743 us | 0.1270 us |  0.1651 us |   6.746 us |  0.29 |    0.04 |
-| PrimitivePrepared |        Minimal |       Minimal |   9.833 us | 0.3539 us |  1.0434 us |   9.903 us |  0.42 |    0.07 |
-|    SocketsHandler |        Minimal |       Minimal |  23.676 us | 0.9795 us |  2.7946 us |  23.330 us |  1.00 |    0.00 |
-|                   |                |               |            |           |            |            |       |         |
-|         Primitive |        Minimal | StackOverflow |  14.772 us | 0.6929 us |  2.0430 us |  14.493 us |  0.16 |    0.03 |
-| PrimitivePrepared |        Minimal | StackOverflow |  13.070 us | 0.4057 us |  1.1961 us |  13.022 us |  0.14 |    0.02 |
-|    SocketsHandler |        Minimal | StackOverflow |  92.568 us | 2.5592 us |  7.5458 us |  94.691 us |  1.00 |    0.00 |
-|                   |                |               |            |           |            |            |       |         |
-|         Primitive |         Normal |       Minimal |  11.128 us | 0.2688 us |  0.7925 us |  11.174 us |  0.29 |    0.04 |
-| PrimitivePrepared |         Normal |       Minimal |  10.643 us | 0.3478 us |  1.0256 us |  10.717 us |  0.28 |    0.05 |
-|    SocketsHandler |         Normal |       Minimal |  38.998 us | 1.5401 us |  4.5411 us |  40.723 us |  1.00 |    0.00 |
-|                   |                |               |            |           |            |            |       |         |
-|         Primitive |         Normal | StackOverflow |  15.768 us | 0.5396 us |  1.5655 us |  15.549 us |  0.15 |    0.03 |
-| PrimitivePrepared |         Normal | StackOverflow |  14.192 us | 0.7050 us |  2.0452 us |  13.880 us |  0.14 |    0.03 |
-|    SocketsHandler |         Normal | StackOverflow | 104.513 us | 4.9165 us | 14.4964 us | 109.489 us |  1.00 |    0.00 |
+|            Method | RequestHeaders | ResponseBytes |      Mean |     Error |    StdDev |    Median | Ratio | RatioSD |
+|------------------ |--------------- |-------------- |----------:|----------:|----------:|----------:|------:|--------:|
+|         Primitive |        Minimal |       Minimal | 10.806 us | 0.3304 us | 0.9741 us | 10.985 us |  0.51 |    0.05 |
+| PrimitivePrepared |        Minimal |       Minimal |  9.278 us | 0.2091 us | 0.6066 us |  9.298 us |  0.44 |    0.04 |
+|    SocketsHandler |        Minimal |       Minimal | 21.323 us | 0.4380 us | 1.2136 us | 21.442 us |  1.00 |    0.00 |
+|                   |                |               |           |           |           |           |       |         |
+|         Primitive |        Minimal | StackOverflow | 13.665 us | 0.6509 us | 1.9089 us | 13.187 us |  0.16 |    0.02 |
+| PrimitivePrepared |        Minimal | StackOverflow | 14.108 us | 0.6328 us | 1.8559 us | 13.432 us |  0.17 |    0.03 |
+|    SocketsHandler |        Minimal | StackOverflow | 86.356 us | 1.7149 us | 4.2707 us | 87.476 us |  1.00 |    0.00 |
+|                   |                |               |           |           |           |           |       |         |
+|         Primitive |         Normal |       Minimal | 11.053 us | 0.2498 us | 0.7366 us | 11.149 us |  0.32 |    0.03 |
+| PrimitivePrepared |         Normal |       Minimal | 10.636 us | 0.2867 us | 0.8455 us | 10.701 us |  0.31 |    0.03 |
+|    SocketsHandler |         Normal |       Minimal | 34.775 us | 0.6940 us | 1.9231 us | 35.172 us |  1.00 |    0.00 |
+|                   |                |               |           |           |           |           |       |         |
+|         Primitive |         Normal | StackOverflow | 15.080 us | 0.6158 us | 1.7866 us | 14.874 us |  0.16 |    0.03 |
+| PrimitivePrepared |         Normal | StackOverflow | 13.964 us | 0.5963 us | 1.7490 us | 13.257 us |  0.15 |    0.02 |
+|    SocketsHandler |         Normal | StackOverflow | 94.221 us | 2.4801 us | 7.3127 us | 96.337 us |  1.00 |    0.00 |
 
 ### A simple GET request using exactly one HTTP/1 connection, no pooling
 
@@ -131,8 +131,11 @@ while(await request.ReadAsync() != HttpReadType.EndOfStream)
 {
     switch(request.ReadType)
     {
-    case HttpReadType.Request:
-        ProcessRequest(request.StatusCode, request.Version);
+    case HttpReadType.InformationalResponse:
+        ProcessInformationalResponse(request.StatusCode, request.Version);
+        break;
+    case HttpReadType.FinalResponse:
+        ProcessResponse(request.StatusCode, request.Version);
         break;
     case HttpReadType.Headers:
         await request.ReadHeadersAsync(...);

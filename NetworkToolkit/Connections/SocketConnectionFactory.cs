@@ -121,7 +121,28 @@ namespace NetworkToolkit.Connections
         /// <inheritdoc/>
         public override async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionProperties? options = null, CancellationToken cancellationToken = default)
         {
-            if (endPoint == null) throw new ArgumentNullException(nameof(endPoint));
+            switch (endPoint)
+            {
+                case null: throw new ArgumentNullException(nameof(endPoint));
+                case IPEndPoint ip6 when ip6.Address.Equals(IPAddress.IPv6Any):
+                    // For compatibility with a listener's EndPoint being Any, connect to Loopback instead.
+                    endPoint = new IPEndPoint(IPAddress.IPv6Loopback, ip6.Port);
+                    break;
+                case IPEndPoint ip4 when ip4.Address.Equals(IPAddress.Any):
+                    endPoint = new IPEndPoint(IPAddress.Loopback, ip4.Port);
+                    break;
+            }
+
+            if (endPoint is IPEndPoint ipEp)
+            {
+                if (ipEp.Address.Equals(IPAddress.IPv6Any))
+                {
+                }
+                else if (ipEp.Address == IPAddress.Any)
+                {
+                    endPoint = new IPEndPoint(IPAddress.Loopback, ipEp.Port);
+                }
+            }
 
             Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
 
@@ -295,12 +316,6 @@ namespace NetworkToolkit.Connections
 
                 value = null;
                 return false;
-            }
-
-            public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
-            {
-                await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                Socket.Shutdown(SocketShutdown.Send);
             }
         }
 

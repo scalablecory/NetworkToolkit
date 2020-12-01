@@ -108,9 +108,6 @@ namespace NetworkToolkit.Connections
 
             public override EndPoint? RemoteEndPoint { get; }
 
-            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken) =>
-                ((HttpContentStream)Stream).Request.CompleteRequestAsync(cancellationToken);
-
             protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
             {
                 return default;

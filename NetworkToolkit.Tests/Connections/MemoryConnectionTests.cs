@@ -24,7 +24,7 @@ namespace NetworkToolkit.Tests.Connections
                     {
                         await writer.WriteLineAsync(ClientTestValue);
                     }
-                    await clientConnection.CompleteWritesAsync();
+                    await ((ICompletableStream)clientConnection.Stream).CompleteWritesAsync();
 
                     using (var reader = new StreamReader(clientConnection.Stream))
                     {
@@ -38,7 +38,7 @@ namespace NetworkToolkit.Tests.Connections
                     {
                         await writer.WriteLineAsync(ServerTestValue);
                     }
-                    await serverConnection.CompleteWritesAsync();
+                    await ((ICompletableStream)serverConnection.Stream).CompleteWritesAsync();
 
                     using (var reader = new StreamReader(serverConnection.Stream))
                     {

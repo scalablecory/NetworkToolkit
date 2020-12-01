@@ -114,7 +114,7 @@ namespace NetworkToolkit.Tests.Http
                         Assert.False(nextReadTask.IsCompleted);
                         await prev.DisposeAsync();
                         Assert.True(nextReadTask.IsCompleted);
-                        Assert.Equal(HttpReadType.Response, await nextReadTask);
+                        Assert.Equal(HttpReadType.FinalResponse, await nextReadTask);
 
                         prev = next;
                     }

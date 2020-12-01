@@ -17,6 +17,7 @@ namespace NetworkToolkit.Tests
 
         public override bool CanRead => _baseStream.CanRead;
         public override bool CanWrite => _baseStream.CanWrite;
+        public override bool CanCompleteWrites => _baseStream is ICompletableStream s && s.CanCompleteWrites;
 
         public TricklingStream(Stream baseStream, IEnumerable<int> trickleSequence, bool forceAsync)
         {
@@ -33,6 +34,18 @@ namespace NetworkToolkit.Tests
 
         public override ValueTask DisposeAsync(CancellationToken cancellationToken) =>
             _baseStream.DisposeAsync(cancellationToken);
+
+        public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+        {
+            if (_baseStream is ICompletableStream s && s.CanCompleteWrites)
+            {
+                await s.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                throw new NotImplementedException();
+            }
+        }
 
         public override void Flush() =>
             _baseStream.Flush();

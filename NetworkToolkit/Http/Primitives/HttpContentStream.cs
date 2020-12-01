@@ -9,17 +9,24 @@ namespace NetworkToolkit.Http.Primitives
     /// <summary>
     /// A <see cref="Stream"/> that reads/writes content over a <see cref="ValueHttpRequest"/>.
     /// </summary>
-    public class HttpContentStream : Stream, ICancellableAsyncDisposable, IGatheringStream
+    public class HttpContentStream : Stream, IGatheringStream, ICancellableAsyncDisposable, ICompletableStream
     {
         internal ValueHttpRequest _request;
 
         private readonly bool _ownsRequest;
         private StreamState _readState;
+        private bool _completed;
 
         /// <summary>
         /// The <see cref="ValueHttpRequest"/> being operated on.
         /// </summary>
         public ValueHttpRequest Request => _request;
+
+        /// <inheritdoc/>
+        public bool CanCompleteWrites => true;
+
+        /// <inheritdoc/>
+        public bool CanWriteGathered => true;
 
         /// <inheritdoc/>
         public override bool CanRead => _readState < StreamState.EndOfStream;
@@ -50,16 +57,10 @@ namespace NetworkToolkit.Http.Primitives
         /// <inheritdoc/>
         protected override void Dispose(bool disposing)
         {
-            if (disposing && _readState != StreamState.Disposed)
+            if (disposing)
             {
-                if (_ownsRequest)
-                {
-                    Tools.BlockForResult(_request.DisposeAsync());
-                }
-                _readState = StreamState.Disposed;
+                Tools.BlockForResult(DisposeAsync(CancellationToken.None));
             }
-
-            base.Dispose(disposing);
         }
 
         /// <inheritdoc/>
@@ -73,12 +74,42 @@ namespace NetworkToolkit.Http.Primitives
             {
                 if (_ownsRequest)
                 {
+                    if (!_completed)
+                    {
+                        try
+                        {
+                            await _request.CompleteRequestAsync(cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // DisposeAsync should not throw.
+                        }
+                    }
+
                     await _request.DisposeAsync(cancellationToken).ConfigureAwait(false);
                 }
+
                 _readState = StreamState.Disposed;
             }
+        }
 
-            await base.DisposeAsync().ConfigureAwait(false);
+        /// <inheritdoc/>
+        public async ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+        {
+            if (_readState == StreamState.Disposed)
+            {
+                throw new ObjectDisposedException(GetType().Name);
+            }
+
+            try
+            {
+                await _request.CompleteRequestAsync(cancellationToken).ConfigureAwait(false);
+                _completed = true;
+            }
+            catch(Exception ex)
+            {
+                throw new IOException(ex.Message, ex);
+            }
         }
 
         /// <inheritdoc/>

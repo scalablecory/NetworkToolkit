@@ -21,9 +21,9 @@
         /// <summary>
         /// HTTP response.
         /// <see cref="ValueHttpRequest.StatusCode"/> and <see cref="ValueHttpRequest.Version"/> are now valid.
-        /// <see cref="Response"/> will only be returned for a final response, not informational responses.
+        /// <see cref="FinalResponse"/> will only be returned for a final response, not informational responses.
         /// </summary>
-        Response,
+        FinalResponse,
 
         /// <summary>
         /// HTTP response headers.

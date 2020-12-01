@@ -136,7 +136,7 @@ namespace NetworkToolkit.Tests.Http
                     client.WriteHeader("TE", "trailers");
                     await client.CompleteRequestAsync();
 
-                    Assert.True(await client.ReadToResponseAsync());
+                    Assert.True(await client.ReadToFinalResponseAsync());
 
                     Version version = client.Version!;
                     Assert.NotNull(version);

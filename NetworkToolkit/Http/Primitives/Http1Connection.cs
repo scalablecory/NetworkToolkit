@@ -148,7 +148,7 @@ namespace NetworkToolkit.Http.Primitives
 
             Stream stream = connection.Stream;
 
-            if (stream is not IGatheringStream gatheringStream)
+            if (stream is not IGatheringStream gatheringStream || !gatheringStream.CanWriteGathered)
             {
                 var bufferingStream = new WriteBufferingStream(stream);
                 stream = bufferingStream;
@@ -207,11 +207,12 @@ namespace NetworkToolkit.Http.Primitives
             }
 
             Http1Request request;
-            bool immediateStart = false;
+            bool waitForWrite = true;
+            bool waitForRead;
 
             lock (_sync)
             {
-                bool waitForRead = _activeRequests.Front is not null;
+                waitForRead = _activeRequests.Front is not null;
 
                 if (_requestCache.PopBack() is Http1Request cachedRequest)
                 {
@@ -225,21 +226,29 @@ namespace NetworkToolkit.Http.Primitives
 
                 if (_currentWriter is null)
                 {
-                    immediateStart = true;
+                    waitForWrite = false;
                     _currentWriter = request;
                 }
 
                 _activeRequests.PushBack(request);
             }
 
-            if (!immediateStart)
+            if (waitForWrite)
             {
+                Debug.Assert(waitForRead == true);
+
                 // waiting for another request to complete.
                 return request.GetWriteWaitTask(cancellationToken);
             }
 
             // no active request: start immediately.
             PrepareForNextWriter();
+
+            if (!waitForRead)
+            {
+                PrepareForNextReader();
+            }
+
             return new ValueTask<ValueHttpRequest?>(request.GetValueRequest());
         }
 
@@ -252,7 +261,7 @@ namespace NetworkToolkit.Http.Primitives
                 {
                     await _stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
                 }
-                finally
+                catch
                 {
                     // do nothing. dispose will be retried when user disposes connection.
                 }
@@ -310,7 +319,7 @@ namespace NetworkToolkit.Http.Primitives
                 }
                 else
                 {
-                    nextReader.FailReadWait(new Exception("Drain failed; connection is ready to disposal."));
+                    nextReader.FailReadWait(CreateRethrowException());
                 }
             }
         }
@@ -690,6 +699,7 @@ namespace NetworkToolkit.Http.Primitives
             try
             {
                 FlushHeadersHelper(completingRequest: true);
+
                 if (_writeBuffer.ActiveLength != 0)
                 {
                     await _stream.WriteAsync(_writeBuffer.ActiveMemory, cancellationToken).ConfigureAwait(false);
@@ -700,7 +710,11 @@ namespace NetworkToolkit.Http.Primitives
 
                 if (_closeConnection)
                 {
-                    await _connection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+                    if (_stream is ICompletableStream completableStream && completableStream.CanCompleteWrites)
+                    {
+                        await completableStream.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
                     _connectionState = HttpConnectionStatus.Closing;
                 }
 
@@ -889,7 +903,7 @@ namespace NetworkToolkit.Http.Primitives
                             _responseIsChunked = false;
                             _readingFirstResponseChunk = true;
 
-                            result = HttpReadType.Response;
+                            result = HttpReadType.FinalResponse;
                         }
                         else
                         {
@@ -909,6 +923,7 @@ namespace NetworkToolkit.Http.Primitives
                         CompleteRead(HttpReadType.Headers);
                         return;
                     case ReadState.SkipHeaders:
+                        // only hit when caller didn't read headers (just called ReadAsync() again)
                         _readState = ReadState.OnHeadersRead;
                         _readAwaitable = ReadHeadersAsync(NullHttpHeaderSink.Instance, state: null, _readToken).ConfigureAwait(false).GetAwaiter();
                         if (!_readAwaitable.IsCompleted)
@@ -918,6 +933,7 @@ namespace NetworkToolkit.Http.Primitives
                         }
                         goto case ReadState.OnHeadersRead;
                     case ReadState.OnHeadersRead:
+                        // only hit if SkipHeaders happens.
                         _readAwaitable.GetResult();
                         goto case ReadState.ReadToContent;
                     case ReadState.ReadToContent:
@@ -939,6 +955,7 @@ namespace NetworkToolkit.Http.Primitives
                         CompleteRead(HttpReadType.Content);
                         return;
                     case ReadState.SkipContent:
+                        // only hit when caller didn't read content (just called ReadAsync() again)
                         _drainContentBuffer ??= ArrayPool<byte>.Shared.Rent(8192);
 
                         _readState = ReadState.OnContentReceived;
@@ -950,6 +967,7 @@ namespace NetworkToolkit.Http.Primitives
                         }
                         goto case ReadState.OnContentReceived;
                     case ReadState.OnContentReceived:
+                        // only hit if SkipContent happens.
                         Debug.Assert(_drainContentBuffer != null);
 
                         try
@@ -1029,15 +1047,15 @@ namespace NetworkToolkit.Http.Primitives
 
         private bool TryReadResponse()
         {
-            if (_readBuffer.ActiveLength == 0)
+            ReadOnlySpan<byte> buffer = _readBuffer.ActiveSpan;
+
+            if (buffer.Length == 0)
             {
                 return false;
             }
 
             Version version;
             System.Net.HttpStatusCode statusCode;
-
-            ReadOnlySpan<byte> buffer = _readBuffer.ActiveSpan;
 
             if (buffer.Length >= 9 && buffer[8] == ' ')
             {
@@ -1131,10 +1149,11 @@ namespace NetworkToolkit.Http.Primitives
                     case ReadHeadersState.ReadHeaders:
                         Debug.Assert(_headersSink != null);
 
-                        int bytesConsumed;
-                        if (!ReadHeadersImpl(_readBuffer.ActiveSpan, _headersSink, _headersSinkState, out bytesConsumed))
+                        bool headersFinished = ReadHeadersImpl(_readBuffer.ActiveSpan, _headersSink, _headersSinkState, out int bytesConsumed);
+                        _readBuffer.Discard(bytesConsumed);
+
+                        if (!headersFinished)
                         {
-                            _readBuffer.Discard(bytesConsumed);
                             _readBuffer.EnsureAvailableSpace(1);
 
                             _readBytesAwaitable = _stream.ReadAsync(_readBuffer.AvailableMemory, _readToken).ConfigureAwait(false).GetAwaiter();
@@ -1147,8 +1166,6 @@ namespace NetworkToolkit.Http.Primitives
 
                             goto case ReadHeadersState.OnHeaderBytesReceived;
                         }
-
-                        _readBuffer.Discard(bytesConsumed);
 
                         if (_readState == ReadState.SkipHeaders)
                         {

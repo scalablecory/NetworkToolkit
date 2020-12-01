@@ -46,21 +46,26 @@ namespace NetworkToolkit.Http.Primitives
                 return;
             }
 
-            if (ReadType != HttpReadType.EndOfStream)
+            if (_connection.Status == HttpConnectionStatus.Open)
             {
                 // drain the connection to prepare for next request.
 
                 try
                 {
-                    while (await ReadAsync(version, cancellationToken).ConfigureAwait(false) != HttpReadType.EndOfStream)
+                    // TODO: if we are the active writer, call CompleteRequestAsync().
+
+                    if (ReadType != HttpReadType.EndOfStream)
                     {
-                        // TODO: test against maximum drain size.
+                        while (await ReadAsync(version, cancellationToken).ConfigureAwait(false) != HttpReadType.EndOfStream)
+                        {
+                            // TODO: test against maximum drain size.
+                        }
                     }
                 }
-                catch (OperationCanceledException)
+                catch
                 {
-                    // do not throw OCE in DisposeAsync; instead treat as an abortive dispose rather than graceful. (i.e. tear down connection without draining)
-                    _connection.DrainFailed();
+                    // do not throw in DisposeAsync.
+                    // ReadAsync will record exception and tear down connection; no need to do anything here.
                 }
             }
 

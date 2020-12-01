@@ -12,6 +12,11 @@ namespace NetworkToolkit
     public interface IGatheringStream
     {
         /// <summary>
+        /// If true, the <see cref="WriteAsync(IReadOnlyList{ReadOnlyMemory{byte}}, CancellationToken)"/> implementation will perform an optimal gathered write.
+        /// </summary>
+        bool CanWriteGathered { get; }
+
+        /// <summary>
         /// Writes a list of buffers as a single I/O.
         /// </summary>
         /// <param name="buffers">The buffers to write.</param>

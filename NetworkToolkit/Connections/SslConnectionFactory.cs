@@ -119,13 +119,6 @@ namespace NetworkToolkit.Connections
             {
             }
 
-            public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
-            {
-                // TODO: this needs to send the TLS close_notify message. Currently no way to do this.
-                // SslStream.Shutdown() performs a bidirectional close, but we need unidirectional.
-                return new ValueTask(Stream.FlushAsync(cancellationToken));
-            }
-
             public override bool TryGetProperty(Type type, out object? value)
             {
                 if (type == typeof(SslStream))

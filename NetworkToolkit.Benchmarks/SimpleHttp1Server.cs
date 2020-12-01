@@ -67,7 +67,7 @@ namespace NetworkToolkit.Benchmarks
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex);
+                Console.Error.WriteLine(ex);
             }
         }
     }

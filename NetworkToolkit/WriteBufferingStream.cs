@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -12,7 +13,7 @@ namespace NetworkToolkit
     /// <summary>
     /// A stream that buffers writes.
     /// </summary>
-    public sealed class WriteBufferingStream : Stream, IGatheringStream, ICancellableAsyncDisposable
+    public sealed class WriteBufferingStream : Stream, IGatheringStream, ICompletableStream, ICancellableAsyncDisposable
     {
         private readonly Stream _baseStream;
         private byte[] _buffer;
@@ -24,6 +25,12 @@ namespace NetworkToolkit
         /// The underlying stream being buffered.
         /// </summary>
         public Stream BaseStream => _baseStream;
+
+        /// <inheritdoc/>
+        public bool CanWriteGathered => _baseStream is IGatheringStream s && s.CanWriteGathered;
+
+        /// <inheritdoc/>
+        public bool CanCompleteWrites => _baseStream is ICompletableStream s && s.CanCompleteWrites;
 
         /// <inheritdoc/>
         public override bool CanRead => _baseStream?.CanRead ?? false;
@@ -104,6 +111,13 @@ namespace NetworkToolkit
             }
 
             await base.DisposeAsync().ConfigureAwait(false);
+        }
+
+        /// <inheritdoc/>
+        public ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+        {
+            if (_baseStream is ICompletableStream s && s.CanCompleteWrites) return s.CompleteWritesAsync(default);
+            else return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new NotImplementedException()));
         }
 
         /// <inheritdoc/>

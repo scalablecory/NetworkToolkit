@@ -81,12 +81,5 @@ namespace NetworkToolkit.Connections
             value = null;
             return false;
         }
-
-        /// <summary>
-        /// Completes any writes on the stream.
-        /// </summary>
-        /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
-        /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
-        public abstract ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default);
     }
 }

@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 
 namespace NetworkToolkit.Tests
 {
-    internal abstract class TestStreamBase : Stream, IGatheringStream, ICancellableAsyncDisposable
+    internal abstract class TestStreamBase : Stream, IGatheringStream, ICompletableStream, ICancellableAsyncDisposable
     {
+        public bool CanWriteGathered => true;
+        public virtual bool CanCompleteWrites => false;
 
         public override bool CanRead => false;
 
@@ -24,6 +26,11 @@ namespace NetworkToolkit.Tests
         public virtual ValueTask DisposeAsync(CancellationToken cancellationToken)
         {
             return default;
+        }
+
+        public virtual ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+        {
+            return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
         }
 
         public override void Flush() => throw new NotImplementedException();

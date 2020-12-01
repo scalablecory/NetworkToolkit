@@ -41,12 +41,5 @@ namespace NetworkToolkit.Connections
             await Stream.DisposeAsync(cancellationToken).ConfigureAwait(false);
             await BaseConnection.DisposeAsync(cancellationToken).ConfigureAwait(false);
         }
-
-        /// <inheritdoc/>
-        public override async ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
-        {
-            await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            await BaseConnection.CompleteWritesAsync(cancellationToken).ConfigureAwait(false);
-        }
     }
 }

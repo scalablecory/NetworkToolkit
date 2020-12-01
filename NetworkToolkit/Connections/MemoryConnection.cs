@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipelines;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -48,14 +49,13 @@ namespace NetworkToolkit.Connections
         protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
             => default;
 
-        /// <inheritdoc/>
-        public override ValueTask CompleteWritesAsync(CancellationToken cancellationToken)
-            => ((MemoryConnectionStream)Stream).CompleteWritesAsync(cancellationToken);
-
-        private sealed class MemoryConnectionStream : Stream, IGatheringStream
+        private sealed class MemoryConnectionStream : Stream, IGatheringStream, ICompletableStream
         {
             PipeReader? _reader;
             PipeWriter? _writer;
+
+            public bool CanWriteGathered => true;
+            public bool CanCompleteWrites => true;
 
             public override bool CanRead => true;
 
@@ -84,7 +84,8 @@ namespace NetworkToolkit.Connections
                 }
             }
 
-            internal ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
+            /// <inheritdoc/>
+            public ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
             {
                 if (_writer == null) return default;
 
@@ -95,7 +96,7 @@ namespace NetworkToolkit.Connections
                 }
                 catch(Exception ex)
                 {
-                    return ValueTask.FromException(ex);
+                    return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new IOException(ex.Message, ex)));
                 }
             }
 
@@ -149,18 +150,22 @@ namespace NetworkToolkit.Connections
                 }
 
                 ReadOnlySequence<byte> sequence = result.Buffer;
-                long bufferLength = sequence.Length;
+                long sequenceLength = sequence.Length;
                 SequencePosition consumed = sequence.Start;
 
                 try
                 {
-                    if (bufferLength != 0)
+                    if (sequenceLength != 0)
                     {
-                        int actual = (int)Math.Min(bufferLength, buffer.Length);
+                        int actual = (int)Math.Min(sequenceLength, buffer.Length);
 
-                        ReadOnlySequence<byte> slice = actual == bufferLength ? sequence : sequence.Slice(0, actual);
-                        consumed = slice.End;
-                        slice.CopyTo(buffer);
+                        if (actual != sequenceLength)
+                        {
+                            sequence = sequence.Slice(0, actual);
+                        }
+
+                        consumed = sequence.End;
+                        sequence.CopyTo(buffer);
 
                         return actual;
                     }
@@ -180,14 +185,14 @@ namespace NetworkToolkit.Connections
             public override void Write(ReadOnlySpan<byte> buffer)
             {
                 if (_reader == null) throw new ObjectDisposedException(nameof(MemoryConnectionStream));
-                if (_writer == null) throw new InvalidOperationException($"{nameof(MemoryConnectionStream)} cannot be written to after writes have been completed.");
+                if (_writer is not PipeWriter writer) throw new InvalidOperationException($"{nameof(MemoryConnectionStream)} cannot be written to after writes have been completed.");
 
                 try
                 {
-                    buffer.CopyTo(_writer.GetSpan(buffer.Length));
-                    _writer.Advance(buffer.Length);
+                    buffer.CopyTo(writer.GetSpan(buffer.Length));
+                    writer.Advance(buffer.Length);
 
-                    FlushResult res = Tools.BlockForResult(_writer.FlushAsync());
+                    FlushResult res = Tools.BlockForResult(writer.FlushAsync());
 
                     if (res.IsCanceled)
                     {
@@ -210,7 +215,10 @@ namespace NetworkToolkit.Connections
 
                 try
                 {
-                    FlushResult res = await writer.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    buffer.Span.CopyTo(writer.GetSpan(buffer.Length));
+                    writer.Advance(buffer.Length);
+
+                    FlushResult res = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
                     if (res.IsCanceled)
                     {

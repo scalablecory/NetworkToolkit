@@ -388,7 +388,7 @@ namespace NetworkToolkit.Http.Primitives
 
                 ReadType = readType;
 
-                if (readType == HttpReadType.Response)
+                if (readType == HttpReadType.FinalResponse)
                 {
                     StatusCode = _request.StatusCode;
                     Version = _request.Version;

@@ -39,14 +39,14 @@ namespace NetworkToolkit.Http.Primitives
 
         /// <summary>
         /// The version of the HTTP response.
-        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.Response"/>.
+        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.FinalResponse"/> or <see cref="HttpReadType.InformationalResponse"/>.
         /// </summary>
         public Version? Version =>
             _request.Version;
 
         /// <summary>
         /// The status code of the HTTP response.
-        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.Response"/>.
+        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.FinalResponse"/> or <see cref="HttpReadType.InformationalResponse"/>.
         /// </summary>
         public HttpStatusCode StatusCode =>
             _request.StatusCode;
@@ -221,15 +221,16 @@ namespace NetworkToolkit.Http.Primitives
             _request.ReadContentAsync(_requestVersion, buffer, cancellationToken);
 
         /// <summary>
-        /// Reads until a <see cref="HttpReadType.Response"/> is encountered.
-        /// It is possible to have more than one response, when informational responses are returned. Expect to call <see cref="ReadToNextResponseAsync(CancellationToken)"/> in this case.
+        /// Reads until a <see cref="HttpReadType.InformationalResponse"/> is encountered.
+        /// A stream will have zero or more (possibly more than one) informational response.
+        /// One must call <see cref="ReadToNextInformationalResponseAsync(CancellationToken)"/> to retrieve subsequent informational responses.
         /// </summary>
         /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
         /// <returns>
         /// If a response was found before end of stream, true.
         /// Otherwise, false.
         /// </returns>
-        public async ValueTask<bool> ReadToResponseAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<bool> ReadToInformationalResponseAsync(CancellationToken cancellationToken = default)
         {
             HttpReadType readType = _request.ReadType;
 
@@ -237,8 +238,9 @@ namespace NetworkToolkit.Http.Primitives
             {
                 switch (readType)
                 {
-                    case HttpReadType.Response:
+                    case HttpReadType.InformationalResponse:
                         return true;
+                    case HttpReadType.FinalResponse:
                     case HttpReadType.Headers:
                     case HttpReadType.Content:
                     case HttpReadType.TrailingHeaders:
@@ -250,21 +252,22 @@ namespace NetworkToolkit.Http.Primitives
         }
 
         /// <summary>
-        /// Reads until a subsequent <see cref="HttpReadType.Response"/> is encountered.
+        /// Reads until a subsequent <see cref="HttpReadType.InformationalResponse"/> is encountered.
         /// </summary>
         /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
         /// <returns>
         /// If a response was found before end of stream, true.
         /// Otherwise, false.
         /// </returns>
-        public async ValueTask<bool> ReadToNextResponseAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<bool> ReadToNextInformationalResponseAsync(CancellationToken cancellationToken = default)
         {
             while (true)
             {
                 switch (await _request.ReadAsync(_requestVersion, cancellationToken).ConfigureAwait(false))
                 {
-                    case HttpReadType.Response:
+                    case HttpReadType.InformationalResponse:
                         return true;
+                    case HttpReadType.FinalResponse:
                     case HttpReadType.Headers:
                     case HttpReadType.Content:
                     case HttpReadType.TrailingHeaders:
@@ -275,7 +278,7 @@ namespace NetworkToolkit.Http.Primitives
         }
 
         /// <summary>
-        /// Reads until the final <see cref="HttpReadType.Response"/> is encountered, skipping any informational responses.
+        /// Reads until a <see cref="HttpReadType.FinalResponse"/> is encountered.
         /// </summary>
         /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
         /// <returns>
@@ -290,9 +293,8 @@ namespace NetworkToolkit.Http.Primitives
             {
                 switch (readType)
                 {
-                    case HttpReadType.Response:
-                        if((int)_request.StatusCode >= 200) return true;
-                        break;
+                    case HttpReadType.FinalResponse:
+                        return true;
                     case HttpReadType.Headers:
                     case HttpReadType.Content:
                     case HttpReadType.TrailingHeaders:

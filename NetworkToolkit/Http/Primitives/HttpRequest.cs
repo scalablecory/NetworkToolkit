@@ -54,13 +54,13 @@ namespace NetworkToolkit.Http.Primitives
 
         /// <summary>
         /// The version of the HTTP response.
-        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.Response"/>.
+        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.FinalResponse"/> or <see cref="HttpReadType.InformationalResponse"/>.
         /// </summary>
         protected internal Version? Version { get; protected set; }
 
         /// <summary>
         /// The status code of the HTTP response.
-        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.Response"/>.
+        /// Only valid when <see cref="ReadType"/> has been <see cref="HttpReadType.FinalResponse"/> or <see cref="HttpReadType.InformationalResponse"/>.
         /// </summary>
         protected internal HttpStatusCode StatusCode { get; protected set; }
 
