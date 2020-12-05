@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
@@ -20,6 +21,16 @@ namespace NetworkToolkit.Connections
     public sealed class MemoryConnectionFactory : ConnectionFactory
     {
         private readonly ConcurrentDictionary<EndPoint, Channel<TaskCompletionSource<Connection>>> _incomingConnection = new ();
+
+        /// <summary>
+        /// Options used when creating the client-side pipe.
+        /// </summary>
+        public PipeOptions ClientPipeOptions { get; init; } = PipeOptions.Default;
+
+        /// <summary>
+        /// Options used when creating the server-side pipe.
+        /// </summary>
+        public PipeOptions ServerPipeOptions { get; init; } = PipeOptions.Default;
 
         /// <inheritdoc/>
         protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
@@ -62,7 +73,7 @@ namespace NetworkToolkit.Connections
                 return ValueTask.FromException<ConnectionListener>(ExceptionDispatchInfo.SetCurrentStackTrace(new SocketException((int)SocketError.AddressAlreadyInUse)));
             }
 
-            return new ValueTask<ConnectionListener>(new Listener(channel, _incomingConnection, endPoint));
+            return new ValueTask<ConnectionListener>(new Listener(channel, _incomingConnection, endPoint, ClientPipeOptions, ServerPipeOptions));
         }
 
         private sealed class SentinelEndPoint : EndPoint
@@ -74,14 +85,17 @@ namespace NetworkToolkit.Connections
         {
             private readonly Channel<TaskCompletionSource<Connection>> _channel;
             private readonly ConcurrentDictionary<EndPoint, Channel<TaskCompletionSource<Connection>>> _incomingConnection;
+            private readonly PipeOptions _clientPipeOptions, _serverPipeOptions;
             private readonly EndPoint _endPoint;
 
             public override EndPoint? EndPoint => _endPoint;
 
-            public Listener(Channel<TaskCompletionSource<Connection>> channel, ConcurrentDictionary<EndPoint, Channel<TaskCompletionSource<Connection>>> incomingConnection, EndPoint endPoint)
+            public Listener(Channel<TaskCompletionSource<Connection>> channel, ConcurrentDictionary<EndPoint, Channel<TaskCompletionSource<Connection>>> incomingConnection, EndPoint endPoint, PipeOptions clientPipeOptions, PipeOptions serverPipeOptions)
             {
                 _channel = channel;
                 _incomingConnection = incomingConnection;
+                _clientPipeOptions = clientPipeOptions;
+                _serverPipeOptions = serverPipeOptions;
                 _endPoint = endPoint;
             }
 
@@ -114,7 +128,7 @@ namespace NetworkToolkit.Connections
                     return null;
                 }
 
-                (Connection clientConnection, Connection serverConnection) = MemoryConnection.Create(new SentinelEndPoint(), _endPoint);
+                (Connection clientConnection, Connection serverConnection) = MemoryConnection.Create(new SentinelEndPoint(), _clientPipeOptions, _endPoint, _serverPipeOptions);
 
                 tcs.SetResult(clientConnection);
                 return serverConnection;

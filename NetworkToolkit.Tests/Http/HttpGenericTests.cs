@@ -3,11 +3,14 @@ using NetworkToolkit.Http.Primitives;
 using NetworkToolkit.Tests.Http.Servers;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -15,25 +18,20 @@ namespace NetworkToolkit.Tests.Http
 {
     public abstract class HttpGenericTests : TestsBase
     {
+        protected HttpGenericTests()
+        {
+            if (UseSsl) DefaultTestTimeout *= 2;
+            if (Trickle) DefaultTestTimeout *= 2;
+        }
+
         [Theory]
         [MemberData(nameof(NonChunkedData))]
         public async Task Send_NonChunkedRequest_Success(int testIdx, TestHeadersSink requestHeaders, List<string> requestContent)
         {
-            _ = testIdx; // only used to assist debugging.
-
             await RunSingleStreamTest(
                 async (clientRequest, serverUri) =>
                 {
-                    long contentLength = requestContent.Sum(x => (long)x.Length);
-                    clientRequest.ConfigureRequest(contentLength, hasTrailingHeaders: false);
-                    clientRequest.WriteRequest(HttpMethod.Post, serverUri);
-                    clientRequest.WriteHeader("Content-Length", contentLength.ToString(CultureInfo.InvariantCulture));
-                    clientRequest.WriteHeaders(requestHeaders);
-                    foreach (string content in requestContent)
-                    {
-                        await clientRequest.WriteContentAsync(content);
-                    }
-                    await clientRequest.CompleteRequestAsync();
+                    await ClientSendHelperAsync(clientRequest, serverUri, testIdx, requestHeaders, requestContent, requestTrailingHeaders: null);
                 },
                 async serverStream =>
                 {
@@ -68,44 +66,14 @@ namespace NetworkToolkit.Tests.Http
                 });
         }
 
-        public static IEnumerable<object[]> NonChunkedData()
-        {
-            int testIdx = 0;
-
-            foreach (TestHeadersSink headers in HeadersData())
-            {
-                foreach (List<string> contents in ContentData())
-                {
-                    ++testIdx;
-
-                    yield return new object[] { testIdx, headers, contents };
-                }
-            }
-        }
-
         [Theory]
         [MemberData(nameof(ChunkedData))]
         public async Task Send_ChunkedRequest_Success(int testIdx, TestHeadersSink requestHeaders, List<string> requestContent, TestHeadersSink requestTrailingHeaders)
         {
-            _ = testIdx; // only used to assist debugging.
-
             await RunSingleStreamTest(
                 async (client, serverUri) =>
                 {
-                    long contentLength = requestContent.Sum(x => (long)x.Length);
-                    client.ConfigureRequest(contentLength, hasTrailingHeaders: true);
-                    client.WriteRequest(HttpMethod.Post, serverUri);
-                    client.WriteHeader("Content-Length", contentLength.ToString(CultureInfo.InvariantCulture));
-                    client.WriteHeaders(requestHeaders);
-
-                    foreach (string content in requestContent)
-                    {
-                        await client.WriteContentAsync(content);
-                    }
-
-                    client.WriteTrailingHeaders(requestTrailingHeaders);
-
-                    await client.CompleteRequestAsync();
+                    await ClientSendHelperAsync(client, serverUri, testIdx, requestHeaders, requestContent, requestTrailingHeaders);
                 },
                 async server =>
                 {
@@ -160,6 +128,190 @@ namespace NetworkToolkit.Tests.Http
                 {
                     await server.ReceiveAndSendChunkedAsync(headers: responseHeaders, content: responseContent, trailingHeaders: responseTrailingHeaders);
                 });
+        }
+
+        [Fact]
+        public async Task Send_MultipleRequests_Sequential_Success()
+        {
+            await RunMultiStreamTest(
+                async (client, uri) =>
+                {
+                    foreach ((var testIdx, var headers, var content, var trailingHeaders) in InterleavedData())
+                    {
+                        await using ValueHttpRequest request = (await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact)).Value;
+                        await ClientSendHelperAsync(request, uri, testIdx, headers, content, trailingHeaders);
+                    }
+                },
+                async server =>
+                {
+                    foreach ((var testIdx, var headers, var content, var trailingHeaders) in InterleavedData())
+                    {
+                        await using HttpTestStream serverStream = await server.AcceptStreamAsync();
+                        HttpTestFullRequest request = await serverStream.ReceiveAndSendAsync();
+                        Assert.True(request.Headers.Contains(headers));
+                        Assert.Equal(string.Join("", content), request.Content);
+
+                        if (trailingHeaders is not null)
+                        {
+                            Assert.True(request.TrailingHeaders.Contains(trailingHeaders));
+                        }
+                    }
+                }, millisecondsTimeout: DefaultTestTimeout * 10);
+        }
+
+        //[Fact]
+        public async Task Send_MultipleRequests_Parallel_Success()
+        {
+            await using ConnectionFactory connectionFactory = CreateConnectionFactory();
+            await using HttpTestServer server = await CreateTestServerAsync(connectionFactory);
+            await using HttpConnection client = await CreateTestClientAsync(connectionFactory, server.EndPoint!);
+
+            var data = InterleavedData().ToArray();
+
+            await RunClientServer(
+                async () =>
+                {
+                    var clientTasks = new List<Task>();
+                    using var barrier = new SemaphoreSlim(initialCount: 0);
+
+                    foreach ((var testIdx, var headers, var content, var trailingHeaders) in data)
+                    {
+                        clientTasks.Add(Task.Run(async () =>
+                        {
+                            await barrier.WaitAsync();
+                            await using ValueHttpRequest request = (await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact)).Value;
+                            await ClientSendHelperAsync(request, server.Uri, testIdx, headers, content, trailingHeaders);
+                        }));
+                    }
+
+                    barrier.Release(clientTasks.Count);
+
+                    if (Debugger.IsAttached)
+                    {
+                        await clientTasks.ToArray().WhenAllOrAnyFailed();
+                    }
+                    else
+                    {
+                        await clientTasks.ToArray().WhenAllOrAnyFailed(DefaultTestTimeout * 10);
+                    }
+                },
+                async () =>
+                {
+                    await using HttpTestConnection serverConnection = await server.AcceptAsync();
+
+                    for (int i = 0; i != data.Length; ++i)
+                    {
+                        await using HttpTestStream serverStream = await serverConnection.AcceptStreamAsync();
+                        HttpTestFullRequest request = await serverStream.ReceiveAndSendAsync();
+                        int requestTestIdx = int.Parse(request.Headers.GetSingleValue("Test-Index"), CultureInfo.InvariantCulture);
+
+                        (var testIdx, var headers, var content, var trailingHeaders) = data[requestTestIdx - 1];
+                        Assert.Equal(requestTestIdx, testIdx);
+
+                        Assert.True(request.Headers.Contains(headers));
+                        Assert.Equal(string.Join("", content), request.Content);
+
+                        if (trailingHeaders is not null)
+                        {
+                            Assert.True(request.TrailingHeaders.Contains(trailingHeaders));
+                        }
+                    }
+                }, millisecondsTimeout: DefaultTestTimeout * 15);
+        }
+
+        private async Task ClientSendHelperAsync(ValueHttpRequest client, Uri serverUri, int testIdx, TestHeadersSink requestHeaders, List<string> requestContent, TestHeadersSink? requestTrailingHeaders)
+        {
+            long contentLength = requestContent.Sum(x => (long)x.Length);
+            client.ConfigureRequest(contentLength, hasTrailingHeaders: requestTrailingHeaders != null);
+            client.WriteRequest(HttpMethod.Post, serverUri);
+            client.WriteHeader("Content-Length", contentLength.ToString(CultureInfo.InvariantCulture));
+            client.WriteHeader("Test-Index", testIdx.ToString(CultureInfo.InvariantCulture));
+            client.WriteHeaders(requestHeaders);
+
+            foreach (string content in requestContent)
+            {
+                await client.WriteContentAsync(content);
+            }
+
+            if (requestTrailingHeaders != null)
+            {
+                client.WriteTrailingHeaders(requestTrailingHeaders);
+            }
+
+            await client.CompleteRequestAsync();
+        }
+
+        public static IEnumerable<(int testidx, TestHeadersSink headers, List<string> content, TestHeadersSink? trailingHeaders)> InterleavedData()
+        {
+            IEnumerator<object[]> nonChunkedIter = NonChunkedData().GetEnumerator();
+            IEnumerator<object[]> chunkedIter = ChunkedData().GetEnumerator();
+            object[] nonChunked, chunked;
+            bool hasNonChunked, hasChunked;
+
+            hasNonChunked = nonChunkedIter.MoveNext();
+            hasChunked = chunkedIter.MoveNext();
+
+            int testIdx = 0;
+
+            while (hasNonChunked && hasChunked)
+            {
+                nonChunked = nonChunkedIter.Current;
+                yield return (
+                    ++testIdx,
+                    (TestHeadersSink)nonChunked[1],
+                    (List<string>)nonChunked[2],
+                    (TestHeadersSink?)null
+                    );
+                hasNonChunked = nonChunkedIter.MoveNext();
+
+                chunked = chunkedIter.Current;
+                yield return (
+                    ++testIdx,
+                    (TestHeadersSink)chunked[1],
+                    (List<string>)chunked[2],
+                    (TestHeadersSink?)chunked[3]
+                    );
+                hasChunked = chunkedIter.MoveNext();
+            }
+
+            while (hasNonChunked)
+            {
+                nonChunked = nonChunkedIter.Current;
+                yield return (
+                    ++testIdx,
+                    (TestHeadersSink)nonChunked[1],
+                    (List<string>)nonChunked[2],
+                    (TestHeadersSink?)null
+                    );
+                hasNonChunked = nonChunkedIter.MoveNext();
+            }
+
+            while (hasChunked)
+            {
+                chunked = chunkedIter.Current;
+                yield return (
+                    ++testIdx,
+                    (TestHeadersSink)chunked[1],
+                    (List<string>)chunked[2],
+                    (TestHeadersSink?)chunked[3]
+                    );
+                hasChunked = chunkedIter.MoveNext();
+            }
+        }
+
+        public static IEnumerable<object[]> NonChunkedData()
+        {
+            int testIdx = 0;
+
+            foreach (TestHeadersSink headers in HeadersData())
+            {
+                foreach (List<string> contents in ContentData())
+                {
+                    ++testIdx;
+
+                    yield return new object[] { testIdx, headers, contents };
+                }
+            }
         }
 
         public static IEnumerable<object[]> ChunkedData()

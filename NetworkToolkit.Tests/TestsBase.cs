@@ -6,7 +6,9 @@ namespace NetworkToolkit.Tests
 {
     public class TestsBase
     {
-        public static async Task RunClientServer(Func<Task> clientFunc, Func<Task> serverFunc, int? millisecondsTimeout = null)
+        public int DefaultTestTimeout = 1_000;
+
+        public async Task RunClientServer(Func<Task> clientFunc, Func<Task> serverFunc, int? millisecondsTimeout = null)
         {
             Task[] tasks = new[]
             {
@@ -20,7 +22,7 @@ namespace NetworkToolkit.Tests
             }
             else
             {
-                await tasks.WhenAllOrAnyFailed(millisecondsTimeout ?? 1_000).ConfigureAwait(false);
+                await tasks.WhenAllOrAnyFailed(millisecondsTimeout ?? DefaultTestTimeout).ConfigureAwait(false);
             }
         }
     }

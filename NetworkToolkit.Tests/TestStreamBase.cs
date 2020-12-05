@@ -20,7 +20,7 @@ namespace NetworkToolkit.Tests
         public override long Length => throw new InvalidOperationException();
         public override long Position { get => throw new InvalidOperationException(); set => throw new InvalidOperationException(); }
 
-        public override ValueTask DisposeAsync() =>
+        public sealed override ValueTask DisposeAsync() =>
             DisposeAsync(CancellationToken.None);
 
         public virtual ValueTask DisposeAsync(CancellationToken cancellationToken)
@@ -44,16 +44,16 @@ namespace NetworkToolkit.Tests
             return ValueTask.FromException<int>(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
         }
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+        public sealed override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
-        public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
+        public sealed override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
             TaskToApm.Begin(ReadAsync(buffer, offset, count), callback, state);
 
-        public override int EndRead(IAsyncResult asyncResult) =>
+        public sealed override int EndRead(IAsyncResult asyncResult) =>
             TaskToApm.End<int>(asyncResult);
 
-        public override int Read(byte[] buffer, int offset, int count) =>
+        public sealed override int Read(byte[] buffer, int offset, int count) =>
             Tools.BlockForResult(ReadAsync(buffer.AsMemory(offset, count)));
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
@@ -69,16 +69,16 @@ namespace NetworkToolkit.Tests
             }
         }
 
-        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+        public sealed override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
-        public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
+        public sealed override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
             TaskToApm.Begin(WriteAsync(buffer, offset, count), callback, state);
 
-        public override void EndWrite(IAsyncResult asyncResult) =>
+        public sealed override void EndWrite(IAsyncResult asyncResult) =>
             TaskToApm.End(asyncResult);
 
-        public override void Write(byte[] buffer, int offset, int count) =>
+        public sealed override void Write(byte[] buffer, int offset, int count) =>
             Tools.BlockForResult(WriteAsync(buffer.AsMemory(offset, count)));
     }
 }

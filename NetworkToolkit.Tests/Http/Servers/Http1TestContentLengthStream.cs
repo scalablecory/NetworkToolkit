@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -7,15 +8,25 @@ namespace NetworkToolkit.Tests.Http.Servers
     internal class Http1TestContentLengthStream : TestStreamBase
     {
         private readonly Http1TestConnection _con;
+        private readonly Http1TestStream? _stream;
         private long _lengthRemaining;
 
         public override bool CanRead => true;
 
-        public Http1TestContentLengthStream(Http1TestConnection con, long length)
+        public Http1TestContentLengthStream(Http1TestConnection con, Http1TestStream? stream, long length)
         {
             _con = con;
+            _stream = stream;
             _lengthRemaining = length;
         }
+
+        protected override void Dispose(bool disposing)
+        {
+            Debug.Assert(disposing);
+        }
+
+        public override ValueTask DisposeAsync(CancellationToken cancellationToken) =>
+            default;
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
@@ -34,13 +45,26 @@ namespace NetworkToolkit.Tests.Http.Servers
                 _con._readBuffer.ActiveSpan[..recvLen].CopyTo(buffer.Span);
                 _con._readBuffer.Discard(recvLen);
                 _lengthRemaining -= recvLen;
+
+                if (_lengthRemaining == 0)
+                {
+                    _stream?.ReleaseNextReader();
+                }
+
                 return recvLen;
             }
             else
             {
                 recvLen = await _con._stream.ReadAsync(buffer[..recvLen], cancellationToken).ConfigureAwait(false);
                 if (recvLen == 0) throw new Exception($"Unexpected end of stream with {_lengthRemaining} bytes remaining.");
+
                 _lengthRemaining -= recvLen;
+
+                if (_lengthRemaining == 0)
+                {
+                    _stream?.ReleaseNextReader();
+                }
+
                 return recvLen;
             }
         }

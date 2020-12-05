@@ -8,18 +8,23 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace NetworkToolkit.Tests.Http.Servers
 {
     internal sealed class Http1TestConnection : HttpTestConnection
     {
+        private object Sync => _readQueue;
+        private readonly Queue<Http1TestStream> _readQueue = new Queue<Http1TestStream>();
+        private readonly Queue<Http1TestStream> _writeQueue = new Queue<Http1TestStream>();
         private readonly Connection _connection;
         internal readonly Stream _stream;
         internal ArrayBuffer _readBuffer;
+        private int _activeReaders, _activeWriters, _streamIdx;
 
-        private long? _responseContentLength;
-        private bool _responseIsChunked;
+        internal long? _responseContentLength;
+        internal bool _responseIsChunked;
 
         public Http1TestConnection(Connection connection)
         {
@@ -30,7 +35,23 @@ namespace NetworkToolkit.Tests.Http.Servers
 
         public override Task<HttpTestStream> AcceptStreamAsync()
         {
-            return Task.FromResult<HttpTestStream>(new Http1TestStream(this));
+            Http1TestStream stream;
+            bool startRead, startWrite;
+
+            lock (Sync)
+            {
+                startRead = _activeReaders++ == 0;
+                startWrite = _activeWriters++ == 0;
+
+                stream = new Http1TestStream(this, ++_streamIdx);
+                if(!startRead) _readQueue.Enqueue(stream);
+                if(!startWrite) _writeQueue.Enqueue(stream);
+            }
+
+            if (startRead) stream._readSemaphore.Release();
+            if (startWrite) stream._writeSemaphore.Release();
+
+            return Task.FromResult<HttpTestStream>(stream);
         }
 
         public override ValueTask DisposeAsync()
@@ -39,7 +60,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             return _connection.DisposeAsync();
         }
 
-        internal async Task<HttpTestRequest> ReceiveRequestAsync()
+        internal async Task<HttpTestRequest> ReceiveRequestAsync(Http1TestStream stream)
         {
             string request = await ReadLineAsync().ConfigureAwait(false);
 
@@ -63,16 +84,33 @@ namespace NetworkToolkit.Tests.Http.Servers
                 };
             _responseIsChunked = headers.TryGetSingleValue("transfer-encoding", out string? transferEncoding) && transferEncoding == "chunked";
 
+            if (!_responseIsChunked && _responseContentLength == 0)
+            {
+                stream.ReleaseNextReader();
+            }
+
             return new HttpTestRequest(method, pathAndQuery, version, headers);
         }
 
-        internal Stream ReceiveContentStream() =>
+        internal Stream ReceiveContentStream(Http1TestStream stream) =>
             _responseIsChunked ? new Http1TestChunkedStream(this, _responseContentLength) :
-            _responseContentLength != null ? new Http1TestContentLengthStream(this, _responseContentLength.Value) :
+            _responseContentLength != null ? new Http1TestContentLengthStream(this, _responseContentLength != 0 ? stream : null, _responseContentLength.Value) :
             new Http1TestLengthlessStream(this);
 
-        internal async Task<TestHeadersSink> ReceiveTrailingHeadersAsync() =>
-            _responseIsChunked ? await ReadHeadersAsync().ConfigureAwait(false) : new TestHeadersSink();
+        internal async Task<TestHeadersSink> ReceiveTrailingHeadersAsync(Http1TestStream stream)
+        {
+            if (_responseIsChunked)
+            {
+                TestHeadersSink headers = await ReadHeadersAsync().ConfigureAwait(false);
+                stream.ReleaseNextReader();
+                return headers;
+            }
+            else
+            {
+
+                return new TestHeadersSink();
+            }
+        }
 
         private async Task<TestHeadersSink> ReadHeadersAsync()
         {
@@ -141,7 +179,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             return true;
         }
 
-        internal async Task SendResponseAsync(int statusCode, TestHeadersSink? headers, string? content, IList<string>? chunkedContent, TestHeadersSink? trailingHeaders)
+        internal async Task SendResponseAsync(Http1TestStream stream, int statusCode, TestHeadersSink? headers, string? content, IList<string>? chunkedContent, TestHeadersSink? trailingHeaders)
         {
             Debug.Assert(content == null || chunkedContent == null, $"Only one of {nameof(content)} and {nameof(chunkedContent)} can be specified.");
 
@@ -200,6 +238,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             }
 
             await writer.FlushAsync().ConfigureAwait(false);
+            stream.ReleaseNextWriter();
 
             async Task WriteChunkAsync(string chunk)
             {
@@ -211,13 +250,14 @@ namespace NetworkToolkit.Tests.Http.Servers
             }
         }
 
-        internal async Task SendRawResponseAsync(string response)
+        internal async Task SendRawResponseAsync(Http1TestStream stream, string response)
         {
             await _stream.WriteAsync(Encoding.UTF8.GetBytes(response)).ConfigureAwait(false);
             await _stream.FlushAsync().ConfigureAwait(false);
+            stream.ReleaseNextWriter();
         }
 
-        static async Task WriteHeadersAsync(StreamWriter writer, TestHeadersSink? headers)
+        private static async Task WriteHeadersAsync(StreamWriter writer, TestHeadersSink? headers)
         {
             if (headers != null)
             {
@@ -233,6 +273,32 @@ namespace NetworkToolkit.Tests.Http.Servers
                 }
             }
             await writer.WriteAsync("\r\n").ConfigureAwait(false);
+        }
+
+        internal void ReleaseNextReader()
+        {
+            Http1TestStream? stream;
+
+            lock (Sync)
+            {
+                --_activeReaders;
+                _readQueue.TryDequeue(out stream);
+            }
+
+            stream?._readSemaphore.Release();
+        }
+
+        internal void ReleaseNextWriter()
+        {
+            Http1TestStream? stream;
+
+            lock (Sync)
+            {
+                --_activeWriters;
+                _writeQueue.TryDequeue(out stream);
+            }
+
+            stream?._writeSemaphore.Release();
         }
     }
 }

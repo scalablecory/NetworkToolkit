@@ -1,12 +1,14 @@
 ﻿using NetworkToolkit.Connections;
 using NetworkToolkit.Http.Primitives;
 using NetworkToolkit.Tests.Http.Servers;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+using Xunit.Sdk;
 
 namespace NetworkToolkit.Tests.Http
 {
@@ -149,7 +151,14 @@ namespace NetworkToolkit.Tests.Http
                         tasks[i] = MakeRequest(i);
                     }
 
-                    await tasks.WhenAllOrAnyFailed(10_000);
+                    if (Debugger.IsAttached)
+                    {
+                        await tasks.WhenAllOrAnyFailed();
+                    }
+                    else
+                    {
+                        await tasks.WhenAllOrAnyFailed(DefaultTestTimeout * 5);
+                    }
 
                     async Task MakeRequest(int requestNo)
                     {
@@ -189,7 +198,7 @@ namespace NetworkToolkit.Tests.Http
                         await stream.SendResponseAsync(headers: responseHeaders);
                         await stream.DisposeAsync();
                     }
-                });
+                }, millisecondsTimeout: DefaultTestTimeout * 10);
         }
 
         internal override HttpPrimitiveVersion Version => HttpPrimitiveVersion.Version11;

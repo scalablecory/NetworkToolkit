@@ -26,12 +26,14 @@ namespace NetworkToolkit.Connections
         /// Opens a new in-memory connection.
         /// </summary>
         /// <param name="clientEndPoint">The <see cref="EndPoint"/> to use for the client connection, if any.</param>
+        /// <param name="clientPipeOptions">Pipe options used when configuring client-side buffers. If null, <see cref="PipeOptions.Default"/> will be used.</param>
         /// <param name="serverEndPoint">The <see cref="EndPoint"/> to use for the server connection, if any.</param>
+        /// <param name="serverPipeOptions">Pipe options used when configuring server-side buffers. If null, <see cref="PipeOptions.Default"/> will be used.</param>
         /// <returns>A tuple of the client and server connections.</returns>
-        public static (Connection clientConnection, Connection serverConnection) Create(EndPoint? clientEndPoint = null, EndPoint? serverEndPoint = null)
+        public static (Connection clientConnection, Connection serverConnection) Create(EndPoint? clientEndPoint = null, PipeOptions? clientPipeOptions = null, EndPoint? serverEndPoint = null, PipeOptions? serverPipeOptions = null)
         {
-            var bufferA = new Pipe();
-            var bufferB = new Pipe();
+            var bufferA = new Pipe(clientPipeOptions ?? PipeOptions.Default);
+            var bufferB = new Pipe(clientPipeOptions ?? PipeOptions.Default);
 
             Connection clientConnection = new MemoryConnection(bufferA.Reader, bufferB.Writer, clientEndPoint, serverEndPoint);
             Connection serverConnection = new MemoryConnection(bufferB.Reader, bufferA.Writer, serverEndPoint, clientEndPoint);
