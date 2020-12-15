@@ -203,11 +203,19 @@ namespace NetworkToolkit.Tests.Http
 
         internal override HttpPrimitiveVersion Version => HttpPrimitiveVersion.Version11;
 
-        internal override async Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory) =>
-            new Http1TestServer(await connectionFactory.ListenAsync(options: CreateListenerProperties()).ConfigureAwait(false));
+        internal override async Task<HttpTestServer> CreateTestServerAsync(ConnectionFactory connectionFactory)
+        {
+            EndPoint? endPoint = UseSockets ? new IPEndPoint(IPAddress.Loopback, 0) : null;
+            return new Http1TestServer(await connectionFactory.ListenAsync(endPoint, CreateListenerProperties()).ConfigureAwait(false));
+        }
 
         internal override async Task<HttpConnection> CreateTestClientAsync(ConnectionFactory connectionFactory, EndPoint endPoint) =>
             new Http1Connection(await connectionFactory.ConnectAsync(endPoint, options: CreateConnectProperties()), Version);
+    }
+
+    public class Http1SocketTests : Http1Tests
+    {
+        internal override bool UseSockets => true;
     }
 
     public class Http1SslTests : Http1Tests

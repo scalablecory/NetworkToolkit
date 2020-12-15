@@ -126,7 +126,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             return headers;
         }
 
-        private (string headerName, string headerValue) ParseHeader(string header)
+        private static (string headerName, string headerValue) ParseHeader(string header)
         {
             int idx = header.IndexOf(':');
             if (idx == -1) throw new ArgumentException("The value is not a valid header.", nameof(header));
@@ -168,7 +168,7 @@ namespace NetworkToolkit.Tests.Http.Servers
             return true;
         }
 
-        internal async Task<bool> FillReadBufferAsync()
+        private async Task<bool> FillReadBufferAsync()
         {
             _readBuffer.EnsureAvailableSpace(1);
 

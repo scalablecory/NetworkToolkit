@@ -18,12 +18,6 @@ namespace NetworkToolkit.Tests.Http
 {
     public abstract class HttpGenericTests : TestsBase
     {
-        protected HttpGenericTests()
-        {
-            if (UseSsl) DefaultTestTimeout *= 2;
-            if (Trickle) DefaultTestTimeout *= 2;
-        }
-
         [Theory]
         [MemberData(nameof(NonChunkedData))]
         public async Task Send_NonChunkedRequest_Success(int testIdx, TestHeadersSink requestHeaders, List<string> requestContent)
@@ -157,66 +151,6 @@ namespace NetworkToolkit.Tests.Http
                         }
                     }
                 }, millisecondsTimeout: DefaultTestTimeout * 10);
-        }
-
-        //[Fact]
-        public async Task Send_MultipleRequests_Parallel_Success()
-        {
-            await using ConnectionFactory connectionFactory = CreateConnectionFactory();
-            await using HttpTestServer server = await CreateTestServerAsync(connectionFactory);
-            await using HttpConnection client = await CreateTestClientAsync(connectionFactory, server.EndPoint!);
-
-            var data = InterleavedData().ToArray();
-
-            await RunClientServer(
-                async () =>
-                {
-                    var clientTasks = new List<Task>();
-                    using var barrier = new SemaphoreSlim(initialCount: 0);
-
-                    foreach ((var testIdx, var headers, var content, var trailingHeaders) in data)
-                    {
-                        clientTasks.Add(Task.Run(async () =>
-                        {
-                            await barrier.WaitAsync();
-                            await using ValueHttpRequest request = (await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact)).Value;
-                            await ClientSendHelperAsync(request, server.Uri, testIdx, headers, content, trailingHeaders);
-                        }));
-                    }
-
-                    barrier.Release(clientTasks.Count);
-
-                    if (Debugger.IsAttached)
-                    {
-                        await clientTasks.ToArray().WhenAllOrAnyFailed();
-                    }
-                    else
-                    {
-                        await clientTasks.ToArray().WhenAllOrAnyFailed(DefaultTestTimeout * 10);
-                    }
-                },
-                async () =>
-                {
-                    await using HttpTestConnection serverConnection = await server.AcceptAsync();
-
-                    for (int i = 0; i != data.Length; ++i)
-                    {
-                        await using HttpTestStream serverStream = await serverConnection.AcceptStreamAsync();
-                        HttpTestFullRequest request = await serverStream.ReceiveAndSendAsync();
-                        int requestTestIdx = int.Parse(request.Headers.GetSingleValue("Test-Index"), CultureInfo.InvariantCulture);
-
-                        (var testIdx, var headers, var content, var trailingHeaders) = data[requestTestIdx - 1];
-                        Assert.Equal(requestTestIdx, testIdx);
-
-                        Assert.True(request.Headers.Contains(headers));
-                        Assert.Equal(string.Join("", content), request.Content);
-
-                        if (trailingHeaders is not null)
-                        {
-                            Assert.True(request.TrailingHeaders.Contains(trailingHeaders));
-                        }
-                    }
-                }, millisecondsTimeout: DefaultTestTimeout * 15);
         }
 
         private async Task ClientSendHelperAsync(ValueHttpRequest client, Uri serverUri, int testIdx, TestHeadersSink requestHeaders, List<string> requestContent, TestHeadersSink? requestTrailingHeaders)
@@ -414,14 +348,22 @@ namespace NetworkToolkit.Tests.Http
             new List<string> { "foo", "barbar", "bazbazbaz" }
         };
 
+        internal virtual bool UseSockets => false;
         internal virtual bool UseSsl => false;
         internal virtual bool Trickle => false;
         internal virtual bool TrickleForceAsync => false;
         internal abstract HttpPrimitiveVersion Version { get; }
 
+        protected HttpGenericTests()
+        {
+            if (UseSockets) DefaultTestTimeout *= 10;
+            if (UseSsl) DefaultTestTimeout *= 2;
+            if (Trickle) DefaultTestTimeout *= 2;
+        }
+
         internal virtual ConnectionFactory CreateConnectionFactory()
         {
-            ConnectionFactory factory = new MemoryConnectionFactory();
+            ConnectionFactory factory = UseSockets ? new SocketConnectionFactory() : new MemoryConnectionFactory();
             if (UseSsl) factory = new SslConnectionFactory(factory);
             if (Trickle) factory = new TricklingConnectionFactory(factory) { ForceAsync = TrickleForceAsync };
             return factory;
@@ -497,14 +439,13 @@ namespace NetworkToolkit.Tests.Http
             await RunMultiStreamTest(
                 async (client, serverUri) =>
                 {
-                    ValueHttpRequest? optionalRequest = await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact).ConfigureAwait(false);
-                    Assert.NotNull(optionalRequest);
+                    ValueHttpRequest? request = await client.CreateNewRequestAsync(Version, HttpVersionPolicy.RequestVersionExact).ConfigureAwait(false);
+                    Assert.NotNull(request);
 
-                    ValueHttpRequest request = optionalRequest.Value;
                     await using (request.ConfigureAwait(false))
                     {
-                        await clientFunc(request, serverUri).ConfigureAwait(false);
-                        await request.DrainAsync().ConfigureAwait(false);
+                        await clientFunc(request.Value, serverUri).ConfigureAwait(false);
+                        await request.Value.DrainAsync().ConfigureAwait(false);
                     }
                 },
                 async server =>

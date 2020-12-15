@@ -6,7 +6,7 @@ namespace NetworkToolkit.Tests
 {
     public class TestsBase
     {
-        public int DefaultTestTimeout = 1_000;
+        public int DefaultTestTimeout = 500; // in milliseconds.
 
         public async Task RunClientServer(Func<Task> clientFunc, Func<Task> serverFunc, int? millisecondsTimeout = null)
         {
