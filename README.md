@@ -94,7 +94,7 @@ PreparedHeaderSet preparedHeaders = new PreparedHeaderSet()
 {
     { "User-Agent", "NetworkToolkit" },
     { "Accept", "text/html" }
-}
+};
 
 await using ValueHttpRequest request = ...;
 
