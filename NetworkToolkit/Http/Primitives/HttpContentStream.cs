@@ -9,7 +9,7 @@ namespace NetworkToolkit.Http.Primitives
     /// <summary>
     /// A <see cref="Stream"/> that reads/writes content over a <see cref="ValueHttpRequest"/>.
     /// </summary>
-    public class HttpContentStream : Stream, IGatheringStream, ICancellableAsyncDisposable, ICompletableStream
+    public class HttpContentStream : Stream, IScatterGatherStream, ICancellableAsyncDisposable, ICompletableStream
     {
         internal ValueHttpRequest _request;
 
@@ -26,7 +26,7 @@ namespace NetworkToolkit.Http.Primitives
         public bool CanCompleteWrites => true;
 
         /// <inheritdoc/>
-        public bool CanWriteGathered => true;
+        public bool CanScatterGather => true;
 
         /// <inheritdoc/>
         public override bool CanRead => _readState < StreamState.EndOfStream;
@@ -172,6 +172,38 @@ namespace NetworkToolkit.Http.Primitives
                 int len;
 
                 while((len = await _request.ReadContentAsync(buffer, cancellationToken).ConfigureAwait(false)) == 0)
+                {
+                    if (!await _request.ReadToNextContentAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        _readState = StreamState.EndOfStream;
+                        return 0;
+                    }
+                }
+
+                return len;
+            }
+            catch (Exception ex)
+            {
+                throw new IOException(ex.Message, ex);
+            }
+        }
+
+        /// <inheritdoc/>
+        public virtual async ValueTask<int> ReadAsync(IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default)
+        {
+            switch (_readState)
+            {
+                case StreamState.EndOfStream:
+                    return 0;
+                case StreamState.Disposed:
+                    throw new ObjectDisposedException(GetType().Name);
+            }
+
+            try
+            {
+                int len;
+
+                while ((len = await _request.ReadContentAsync(buffers, cancellationToken).ConfigureAwait(false)) == 0)
                 {
                     if (!await _request.ReadToNextContentAsync(cancellationToken).ConfigureAwait(false))
                     {

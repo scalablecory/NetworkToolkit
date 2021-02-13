@@ -221,6 +221,15 @@ namespace NetworkToolkit.Http.Primitives
             _request.ReadContentAsync(_requestVersion, buffer, cancellationToken);
 
         /// <summary>
+        /// Reads response content, if any. Should be called when <see cref="ReadType"/> is <see cref="HttpReadType.Content"/>.
+        /// </summary>
+        /// <param name="buffers">The buffers to read into.</param>
+        /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
+        /// <returns>The number of bytes read into <paramref name="buffers"/>.</returns>
+        public ValueTask<int> ReadContentAsync(IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default) =>
+            _request.ReadContentAsync(_requestVersion, buffers, cancellationToken);
+
+        /// <summary>
         /// Reads until a <see cref="HttpReadType.InformationalResponse"/> is encountered.
         /// A stream will have zero or more (possibly more than one) informational response.
         /// One must call <see cref="ReadToNextInformationalResponseAsync(CancellationToken)"/> to retrieve subsequent informational responses.

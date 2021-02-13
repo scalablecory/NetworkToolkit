@@ -1,15 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace NetworkToolkit.Tests
 {
-    internal abstract class TestStreamBase : Stream, IGatheringStream, ICompletableStream, ICancellableAsyncDisposable
+    internal abstract class TestStreamBase : Stream, IScatterGatherStream, ICompletableStream, ICancellableAsyncDisposable
     {
-        public bool CanWriteGathered => true;
+        public bool CanScatterGather => true;
         public virtual bool CanCompleteWrites => false;
 
         public override bool CanRead => false;
@@ -23,15 +24,11 @@ namespace NetworkToolkit.Tests
         public sealed override ValueTask DisposeAsync() =>
             DisposeAsync(CancellationToken.None);
 
-        public virtual ValueTask DisposeAsync(CancellationToken cancellationToken)
-        {
-            return default;
-        }
+        public virtual ValueTask DisposeAsync(CancellationToken cancellationToken) =>
+            default;
 
-        public virtual ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
-        }
+        public virtual ValueTask CompleteWritesAsync(CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
 
         public override void Flush() => throw new NotImplementedException();
 
@@ -39,10 +36,11 @@ namespace NetworkToolkit.Tests
 
         public override void SetLength(long value) => throw new NotImplementedException();
 
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromException<int>(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
-        }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
+
+        public virtual ValueTask<int> ReadAsync(IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default) =>
+            ReadAsync(buffers.Count != 0 ? buffers[0] : default, cancellationToken);
 
         public sealed override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
@@ -56,10 +54,8 @@ namespace NetworkToolkit.Tests
         public sealed override int Read(byte[] buffer, int offset, int count) =>
             Tools.BlockForResult(ReadAsync(buffer.AsMemory(offset, count)));
 
-        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
-        }
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(ExceptionDispatchInfo.SetCurrentStackTrace(new InvalidOperationException()));
 
         public virtual async ValueTask WriteAsync(IReadOnlyList<ReadOnlyMemory<byte>> buffers, CancellationToken cancellationToken = default)
         {

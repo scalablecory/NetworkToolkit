@@ -1,5 +1,6 @@
 ﻿using BenchmarkDotNet.Attributes;
 using NetworkToolkit.Connections;
+using NetworkToolkit.Http;
 using NetworkToolkit.Http.Primitives;
 using System;
 using System.Collections.Generic;
@@ -209,14 +210,12 @@ namespace NetworkToolkit.Benchmarks
                 {
                     EncodedAllHeaders ??= new List<(byte[], byte[])>();
 
-                    var builder = new PreparedHeaderSetBuilder();
+                    PreparedHeaders = new PreparedHeaderSet();
                     foreach ((string name, string value) in staticHeaders)
                     {
                         EncodedAllHeaders.Add((Encoding.ASCII.GetBytes(name), Encoding.ASCII.GetBytes(value)));
-                        builder.AddHeader(name, value);
+                        PreparedHeaders.Add(name, value);
                     }
-
-                    PreparedHeaders = builder.Build();
                 }
 
                 if (DynamicHeaders is List<(string, string)> dynamicHeaders)

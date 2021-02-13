@@ -72,8 +72,9 @@ namespace NetworkToolkit.Connections
         /// <param name="addressFamily">The <see cref="AddressFamily"/> of the <see cref="Socket"/> to create.</param>
         /// <param name="socketType">The <see cref="SocketType"/> of the <see cref="Socket"/> to create.</param>
         /// <param name="protocolType">The <see cref="ProtocolType"/> of the <see cref="Socket"/> to create.</param>
+        /// <param name="options">Options given to <see cref="ConnectAsync(EndPoint, IConnectionProperties?, CancellationToken)"/>, <see cref="ListenAsync(EndPoint?, IConnectionProperties?, CancellationToken)"/>, or <see cref="ConnectionListener.AcceptConnectionAsync(IConnectionProperties?, CancellationToken)"/>.</param>
         /// <returns>A new <see cref="Socket"/>.</returns>
-        protected virtual Socket CreateSocket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType)
+        protected virtual Socket CreateSocket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType, IConnectionProperties? options)
         {
             var sock = new Socket(addressFamily, socketType, protocolType);
 
@@ -102,20 +103,18 @@ namespace NetworkToolkit.Connections
         /// Creates a <see cref="NetworkStream"/> over a <see cref="Socket"/>.
         /// </summary>
         /// <param name="socket">The <see cref="Socket"/> to create a <see cref="NetworkStream"/> over.</param>
+        /// <param name="options">Options given to <see cref="ConnectAsync(EndPoint, IConnectionProperties?, CancellationToken)"/>, <see cref="ListenAsync(EndPoint?, IConnectionProperties?, CancellationToken)"/>, or <see cref="ConnectionListener.AcceptConnectionAsync(IConnectionProperties?, CancellationToken)"/>.</param>
         /// <returns>A new <see cref="NetworkStream"/>. This stream must take ownership over <paramref name="socket"/>.</returns>
-        /// <remarks>The default implementation returns a <see cref="GatheringNetworkStream"/>, offering better performance for supporting usage.</remarks>
-        protected internal virtual NetworkStream CreateStream(Socket socket)
+        /// <remarks>The default implementation returns a <see cref="NetworkStreamEnhanced"/>, offering better performance for supporting usage.</remarks>
+        protected internal virtual NetworkStream CreateStream(Socket socket, IConnectionProperties? options)
         {
             if (socket == null) throw new ArgumentNullException(nameof(socket));
 
 #pragma warning disable CA1416 // Validate platform compatibility
-            if (CorkingNetworkStream.IsSupported && _protocolType == ProtocolType.Tcp && EnableCorking)
-            {
-                return new CorkingNetworkStream(socket, ownsSocket: true);
-            }
+            bool corked = NetworkStreamEnhanced.IsCorkingSupported && _protocolType == ProtocolType.Tcp && EnableCorking;
 #pragma warning restore CA1416 // Validate platform compatibility
 
-            return new GatheringNetworkStream(socket, ownsSocket: true);
+            return new NetworkStreamEnhanced(socket, ownsSocket: true, corked);
         }
 
         /// <inheritdoc/>
@@ -133,23 +132,12 @@ namespace NetworkToolkit.Connections
                     break;
             }
 
-            if (endPoint is IPEndPoint ipEp)
-            {
-                if (ipEp.Address.Equals(IPAddress.IPv6Any))
-                {
-                }
-                else if (ipEp.Address == IPAddress.Any)
-                {
-                    endPoint = new IPEndPoint(IPAddress.Loopback, ipEp.Port);
-                }
-            }
-
-            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
+            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType, options);
 
             try
             {
                 await sock.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);
-                return new SocketConnection(sock, CreateStream(sock));
+                return new SocketConnection(sock, CreateStream(sock, options));
             }
             catch
             {
@@ -183,7 +171,7 @@ namespace NetworkToolkit.Connections
                 endPoint = new IPEndPoint(address, 0);
             }
 
-            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType);
+            Socket sock = CreateSocket(_addressFamily, _socketType, _protocolType, options);
 
             try
             {
@@ -233,7 +221,7 @@ namespace NetworkToolkit.Connections
                 try
                 {
                     Debug.Assert(_args.AcceptSocket == null);
-                    _args.AcceptSocket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                    _args.AcceptSocket = _connectionFactory.CreateSocket(_connectionFactory._addressFamily, _connectionFactory._socketType, _connectionFactory._protocolType, options);
                     _args.Reset();
 
                     if (_listener.AcceptAsync(_args))
@@ -254,11 +242,12 @@ namespace NetworkToolkit.Connections
 
                         try
                         {
-                            return new SocketConnection(socket, _connectionFactory.CreateStream(socket));
+                            return new SocketConnection(socket, _connectionFactory.CreateStream(socket, options));
                         }
                         catch
                         {
                             socket.Dispose();
+                            throw;
                         }
                     }
 

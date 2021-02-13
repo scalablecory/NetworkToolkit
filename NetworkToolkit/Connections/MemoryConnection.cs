@@ -51,12 +51,12 @@ namespace NetworkToolkit.Connections
         protected override ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
             => default;
 
-        private sealed class MemoryConnectionStream : Stream, IGatheringStream, ICompletableStream
+        private sealed class MemoryConnectionStream : Stream, IScatterGatherStream, ICompletableStream
         {
             PipeReader? _reader;
             PipeWriter? _writer;
 
-            public bool CanWriteGathered => true;
+            public bool CanScatterGather => true;
             public bool CanCompleteWrites => true;
 
             public override bool CanRead => true;
@@ -141,6 +141,12 @@ namespace NetworkToolkit.Connections
                 {
                     throw new IOException(ex.Message, ex);
                 }
+            }
+
+            public ValueTask<int> ReadAsync(IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default)
+            {
+                // TODO.
+                return ReadAsync(buffers.Count != 0 ? buffers[0] : default, cancellationToken);
             }
 
             private static int FinishRead(PipeReader reader, Span<byte> buffer, in ReadResult result, CancellationToken cancellationToken)

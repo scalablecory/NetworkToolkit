@@ -38,7 +38,7 @@ namespace NetworkToolkit.Http.Primitives
         internal readonly HttpPrimitiveVersion _version;
         internal readonly Connection _connection;
         internal readonly Stream _stream;
-        internal readonly IGatheringStream _gatheringStream;
+        internal readonly IScatterGatherStream _gatheringStream;
         internal VectorArrayBuffer _readBuffer;
         internal ArrayBuffer _writeBuffer;
         private readonly List<ReadOnlyMemory<byte>> _gatheredWriteBuffer = new(3);
@@ -148,7 +148,7 @@ namespace NetworkToolkit.Http.Primitives
 
             Stream stream = connection.Stream;
 
-            if (stream is not IGatheringStream gatheringStream || !gatheringStream.CanWriteGathered)
+            if (stream is not IScatterGatherStream gatheringStream || !gatheringStream.CanScatterGather)
             {
                 var bufferingStream = new WriteBufferingStream(stream);
                 stream = bufferingStream;

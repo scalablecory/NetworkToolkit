@@ -218,6 +218,15 @@ namespace NetworkToolkit.Http.Primitives
         protected internal abstract ValueTask<int> ReadContentAsync(int version, Memory<byte> buffer, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Reads response content, if any. Should be called when <see cref="ReadType"/> is <see cref="HttpReadType.Content"/>.
+        /// </summary>
+        /// <param name="version">The version of the request to operate on. This must be validated by implementations.</param>
+        /// <param name="buffers">The buffers to read into.</param>
+        /// <param name="cancellationToken">A cancellation token for the asynchronous operation.</param>
+        /// <returns>The number of bytes read into <paramref name="buffers"/>.</returns>
+        protected internal abstract ValueTask<int> ReadContentAsync(int version, IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Throws if the request is disposed or if <paramref name="version"/> does not match the current request version.
         /// </summary>
         /// <param name="version">The version of the request to operate on.</param>

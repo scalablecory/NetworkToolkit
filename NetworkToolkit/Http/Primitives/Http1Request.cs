@@ -183,6 +183,12 @@ namespace NetworkToolkit.Http.Primitives
             return _connection.ReadContentAsync(buffer, cancellationToken);
         }
 
+        protected internal override ValueTask<int> ReadContentAsync(int version, IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default)
+        {
+            // TODO: implement this properly.
+            return ReadContentAsync(version, buffers.Count != 0 ? buffers[0] : default, cancellationToken);
+        }
+
         public ValueTask<ValueHttpRequest?> GetWriteWaitTask(CancellationToken cancellationToken)
         {
             // TODO: register cancellationToken.

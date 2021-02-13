@@ -403,6 +403,12 @@ namespace NetworkToolkit.Http.Primitives
                 return _request.ReadContentAsync(buffer, cancellationToken);
             }
 
+            protected internal override ValueTask<int> ReadContentAsync(int version, IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken)
+            {
+                if (IsDisposed(version, out ValueTask<int> task)) return task;
+                return _request.ReadContentAsync(buffers, cancellationToken);
+            }
+
             protected internal override ValueTask ReadHeadersAsync(int version, IHttpHeadersSink headersSink, object? state, CancellationToken cancellationToken)
             {
                 if (IsDisposed(version, out ValueTask task)) return task;

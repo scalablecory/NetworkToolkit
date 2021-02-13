@@ -13,7 +13,7 @@ namespace NetworkToolkit
     /// <summary>
     /// A stream that buffers writes.
     /// </summary>
-    public sealed class WriteBufferingStream : Stream, IGatheringStream, ICompletableStream, ICancellableAsyncDisposable
+    public sealed class WriteBufferingStream : Stream, IScatterGatherStream, ICompletableStream, ICancellableAsyncDisposable
     {
         private readonly Stream _baseStream;
         private byte[] _buffer;
@@ -27,7 +27,7 @@ namespace NetworkToolkit
         public Stream BaseStream => _baseStream;
 
         /// <inheritdoc/>
-        public bool CanWriteGathered => _baseStream is IGatheringStream s && s.CanWriteGathered;
+        public bool CanScatterGather => _baseStream is IScatterGatherStream s && s.CanScatterGather;
 
         /// <inheritdoc/>
         public bool CanCompleteWrites => _baseStream is ICompletableStream s && s.CanCompleteWrites;
@@ -171,6 +171,14 @@ namespace NetworkToolkit
         /// <inheritdoc/>
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
             _baseStream.ReadAsync(buffer, cancellationToken);
+
+        /// <inheritdoc/>
+        public ValueTask<int> ReadAsync(IReadOnlyList<Memory<byte>> buffers, CancellationToken cancellationToken = default)
+        {
+            return buffers.Count != 0
+                ? _baseStream.ReadAsync(buffers[0], cancellationToken)
+                : new ValueTask<int>(0);
+        }
 
         /// <inheritdoc/>
         public override long Seek(long offset, SeekOrigin origin)

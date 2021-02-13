@@ -90,11 +90,11 @@ await using ValueHttpRequest request = (await httpConnection.CreateNewRequestAsy
 Prepare frequently-used headers to reduce CPU costs by pre-validating and caching protocol encoding. In the future, this will light up dynamic table compression in HTTP/2 and HTTP/3.
 
 ```c#
-PreparedHeaderSet preparedHeaders =
-    new PreparedHeaderSetBuilder()
-    .AddHeader("User-Agent", "NetworkToolkit")
-    .AddHeader("Accept", "text/html")
-    .Build();
+PreparedHeaderSet preparedHeaders = new PreparedHeaderSet()
+{
+    { "User-Agent", "NetworkToolkit" },
+    { "Accept", "text/html" }
+}
 
 await using ValueHttpRequest request = ...;
 
